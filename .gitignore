@@ -1,9 +1,20 @@
+# Reference repos (local-only clones, not tracked)
 references/
+
+# Build artifacts
 work/
 out/
 *.iso
+*.sha256
 
 # AUR build artifacts (repo is generated, PKGBUILDs are tracked)
 aur/repo/
 aur/build/
+
+# Downloaded assets (fetched by prepare-assets.sh at build time)
+airootfs/usr/share/icons/Bibata-Modern-Classic/
+airootfs/usr/share/icons/hicolor/
+
+# OpenCode / agent config
 .agents/
+skills-lock.json
