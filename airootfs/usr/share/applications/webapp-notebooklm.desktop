@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=NotebookLM
+Exec=chromium --new-window --ozone-platform=wayland --app=https://notebooklm.google.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-notebooklm.png
+Type=Application
+Categories=Network;WebApp;

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=LeetCode
+Exec=chromium --new-window --ozone-platform=wayland --app=https://leetcode.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-leetcode.png
+Type=Application
+Categories=Network;WebApp;

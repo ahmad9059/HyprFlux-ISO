@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Microsoft365
+Exec=chromium --new-window --ozone-platform=wayland --app=https://www.microsoft365.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-microsoft365.png
+Type=Application
+Categories=Network;WebApp;

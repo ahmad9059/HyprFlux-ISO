@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Install HyprFlux
+Comment=Install HyprFlux to your disk
+Exec=kitty --title "HyprFlux Installer" sudo hyprflux-install
+Icon=system-software-install
+Type=Application
+Categories=System;

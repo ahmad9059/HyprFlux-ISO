@@ -1,0 +1,261 @@
+#!/bin/bash
+# ============================================================================
+# hyprflux-welcome — HyprFlux Live ISO Welcome Screen
+# ============================================================================
+# A simple dialog-based welcome/info screen for the HyprFlux live session.
+# Shows system info, quick links, and offers to launch the installer.
+#
+# Copyright (c) 2026 HyprFlux Project
+# License: MIT
+# ============================================================================
+
+readonly BACKTITLE="HyprFlux Live Session"
+readonly DIALOG_HEIGHT=22
+readonly DIALOG_WIDTH=72
+
+# =============================================================================
+# Detect system info
+# =============================================================================
+get_boot_mode() {
+    if [[ -d /sys/firmware/efi/efivars ]]; then
+        echo "UEFI"
+    else
+        echo "Legacy BIOS"
+    fi
+}
+
+get_gpu_info() {
+    local gpu
+    gpu=$(lspci 2>/dev/null | grep -i 'vga\|3d\|display' | head -1 | sed 's/.*: //')
+    if [[ -n "${gpu}" ]]; then
+        echo "${gpu}"
+    else
+        echo "Unknown"
+    fi
+}
+
+get_memory_info() {
+    local mem_total
+    mem_total=$(awk '/MemTotal/ { printf "%.1f GB", $2/1024/1024 }' /proc/meminfo 2>/dev/null)
+    echo "${mem_total:-Unknown}"
+}
+
+get_cpu_info() {
+    local cpu
+    cpu=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //')
+    echo "${cpu:-Unknown}"
+}
+
+get_network_status() {
+    if ping -c 1 -W 2 archlinux.org &>/dev/null; then
+        echo "Connected"
+    else
+        echo "Not connected"
+    fi
+}
+
+get_nvidia_status() {
+    if [[ -f /etc/environment.d/nvidia.conf ]]; then
+        echo "Detected & configured"
+    elif lspci -d '10de:' 2>/dev/null | grep -qi 'vga\|3d\|display'; then
+        echo "Detected (not configured)"
+    else
+        echo "Not detected"
+    fi
+}
+
+# =============================================================================
+# Main menu
+# =============================================================================
+main_menu() {
+    while true; do
+        local choice
+        choice=$(dialog --backtitle "${BACKTITLE}" --title "Welcome to HyprFlux" \
+            --cancel-label "Exit" \
+            --menu "
+    ╦ ╦┬ ┬┌─┐┬─┐╔═╗┬  ┬ ┬─┐ ┬
+    ╠═╣└┬┘├─┘├┬┘╠╣ │  │ │┌┴┬┘
+    ╩ ╩ ┴ ┴  ┴└─╚  ┴─┘└─┘┴ └─
+
+    A pre-configured Hyprland desktop
+    based on Arch Linux.
+
+Choose an option:" \
+            ${DIALOG_HEIGHT} ${DIALOG_WIDTH} 7 \
+            "1" "System Information" \
+            "2" "Install HyprFlux to Disk" \
+            "3" "Keybinding Cheatsheet" \
+            "4" "Network Setup" \
+            "5" "Open a Terminal" \
+            "6" "About HyprFlux" \
+            "7" "Exit" \
+            3>&1 1>&2 2>&3)
+
+        case "${choice}" in
+            1) show_sysinfo ;;
+            2) launch_installer ;;
+            3) show_keybindings ;;
+            4) launch_network ;;
+            5) launch_terminal ;;
+            6) show_about ;;
+            7|"") break ;;
+        esac
+    done
+}
+
+# =============================================================================
+# System Information
+# =============================================================================
+show_sysinfo() {
+    local boot_mode gpu memory cpu network nvidia
+
+    boot_mode=$(get_boot_mode)
+    gpu=$(get_gpu_info)
+    memory=$(get_memory_info)
+    cpu=$(get_cpu_info)
+    network=$(get_network_status)
+    nvidia=$(get_nvidia_status)
+
+    dialog --backtitle "${BACKTITLE}" --title "System Information" --msgbox "
+  Boot Mode:    ${boot_mode}
+  CPU:          ${cpu}
+  Memory:       ${memory}
+  GPU:          ${gpu}
+  NVIDIA:       ${nvidia}
+  Network:      ${network}
+  Kernel:       $(uname -r)
+  Architecture: $(uname -m)
+
+  Disk(s):
+$(lsblk -dpno NAME,SIZE,MODEL 2>/dev/null | grep -E '(sd|nvme|vd)' | sed 's/^/    /' || echo "    No disks found")
+" ${DIALOG_HEIGHT} ${DIALOG_WIDTH}
+}
+
+# =============================================================================
+# Launch Installer
+# =============================================================================
+launch_installer() {
+    dialog --backtitle "${BACKTITLE}" --title "Install HyprFlux" \
+        --yesno "This will launch the HyprFlux disk installer.\n\nThe installer requires root privileges and will guide you\nthrough partitioning, formatting, and installing HyprFlux\nto your disk.\n\nContinue?" 12 60
+    if [[ $? -eq 0 ]]; then
+        clear
+        if [[ $EUID -eq 0 ]]; then
+            exec hyprflux-install
+        else
+            exec sudo hyprflux-install
+        fi
+    fi
+}
+
+# =============================================================================
+# Keybinding Cheatsheet
+# =============================================================================
+show_keybindings() {
+    dialog --backtitle "${BACKTITLE}" --title "Keybinding Cheatsheet" --msgbox "
+  HyprFlux Keybindings (SUPER = Windows/Meta key)
+
+  SUPER + Return        Open terminal (Kitty)
+  SUPER + Q             Close active window
+  SUPER + D             Application launcher (Rofi)
+  SUPER + E             File manager (Thunar)
+  SUPER + B             Web browser (Firefox)
+  SUPER + L             Lock screen (Hyprlock)
+  SUPER + V             Clipboard history
+  SUPER + N             Notification center
+  SUPER + F             Toggle fullscreen
+  SUPER + Space         Toggle floating
+  SUPER + 1-9           Switch workspace
+  SUPER + Shift + 1-9   Move window to workspace
+  SUPER + Arrow keys    Move focus
+  SUPER + Shift + Arrow  Move window
+  SUPER + Scroll        Cycle workspaces
+  Print                 Screenshot (area)
+  SUPER + Print         Screenshot (full)
+  SUPER + Shift + Q     Power menu (wlogout)
+" ${DIALOG_HEIGHT} ${DIALOG_WIDTH}
+}
+
+# =============================================================================
+# Network Setup
+# =============================================================================
+launch_network() {
+    local choice
+    choice=$(dialog --backtitle "${BACKTITLE}" --title "Network Setup" \
+        --menu "Choose a network configuration option:" \
+        14 ${DIALOG_WIDTH} 4 \
+        "1" "Connect to Wi-Fi (nmtui)" \
+        "2" "Check connection status" \
+        "3" "Restart NetworkManager" \
+        "4" "Back" \
+        3>&1 1>&2 2>&3)
+
+    case "${choice}" in
+        1)
+            clear
+            nmtui connect 2>/dev/null || dialog --msgbox "nmtui not available." 6 40
+            ;;
+        2)
+            local status
+            status=$(nmcli general status 2>/dev/null || echo "NetworkManager not running")
+            local wifi
+            wifi=$(nmcli device wifi list 2>/dev/null | head -20 || echo "No Wi-Fi device found")
+            dialog --backtitle "${BACKTITLE}" --title "Network Status" --msgbox \
+                "Status: ${status}\n\nWi-Fi Networks:\n${wifi}" 20 ${DIALOG_WIDTH}
+            ;;
+        3)
+            systemctl restart NetworkManager 2>/dev/null
+            dialog --backtitle "${BACKTITLE}" --title "Network" --msgbox "NetworkManager restarted." 6 40
+            ;;
+    esac
+}
+
+# =============================================================================
+# Launch Terminal
+# =============================================================================
+launch_terminal() {
+    clear
+    if command -v kitty &>/dev/null; then
+        kitty &
+    elif command -v foot &>/dev/null; then
+        foot &
+    else
+        echo "No terminal emulator found."
+        sleep 2
+    fi
+}
+
+# =============================================================================
+# About
+# =============================================================================
+show_about() {
+    dialog --backtitle "${BACKTITLE}" --title "About HyprFlux" --msgbox "
+  ╦ ╦┬ ┬┌─┐┬─┐╔═╗┬  ┬ ┬─┐ ┬
+  ╠═╣└┬┘├─┘├┬┘╠╣ │  │ │┌┴┬┘
+  ╩ ╩ ┴ ┴  ┴└─╚  ┴─┘└─┘┴ └─
+
+  A pre-configured Hyprland desktop environment
+  based on Arch Linux.
+
+  Built with love using archiso.
+  Based on KooL's Hyprland-Dots + custom HyprFlux configs.
+
+  Website:   https://hyprflux.dev
+  GitHub:    https://github.com/ahmad9059/HyprFlux
+  Author:    Ahmad
+
+  Licensed under the MIT License.
+" 20 ${DIALOG_WIDTH}
+}
+
+# =============================================================================
+# Entry point
+# =============================================================================
+
+# Check for dialog
+if ! command -v dialog &>/dev/null; then
+    echo "Error: 'dialog' is required but not installed."
+    exit 1
+fi
+
+main_menu
+clear

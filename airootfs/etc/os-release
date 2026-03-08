@@ -1,0 +1,9 @@
+NAME="HyprFlux"
+PRETTY_NAME="HyprFlux"
+ID=hyprflux
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;23;147;209"
+HOME_URL="https://hyprflux.dev"
+DOCUMENTATION_URL="https://github.com/ahmad9059/HyprFlux"
+LOGO=hyprflux

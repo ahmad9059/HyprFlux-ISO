@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Grok
+Exec=chromium --new-window --ozone-platform=wayland --app=https://grok.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-grok.png
+Type=Application
+Categories=Network;WebApp;

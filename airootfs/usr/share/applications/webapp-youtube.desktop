@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=YouTube
+Exec=chromium --new-window --ozone-platform=wayland --app=https://www.youtube.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-youtube.png
+Type=Application
+Categories=Network;WebApp;

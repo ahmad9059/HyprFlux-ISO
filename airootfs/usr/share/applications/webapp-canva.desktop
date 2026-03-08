@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Canva
+Exec=chromium --new-window --ozone-platform=wayland --app=https://www.canva.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-canva.png
+Type=Application
+Categories=Network;WebApp;

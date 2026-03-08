@@ -1,0 +1,245 @@
+# HyprFlux ISO — Package List
+# One package per line. Comments start with #.
+# AUR packages are provided via the [hyprflux] custom local repo.
+
+# =============================================================================
+# Base System
+# =============================================================================
+base
+linux
+linux-firmware
+linux-headers
+base-devel
+archlinux-keyring
+findutils
+
+# =============================================================================
+# Microcode
+# =============================================================================
+amd-ucode
+intel-ucode
+
+# =============================================================================
+# Boot & Init
+# =============================================================================
+grub
+efibootmgr
+mkinitcpio
+mkinitcpio-archiso
+plymouth
+syslinux
+
+# =============================================================================
+# Hyprland Core
+# =============================================================================
+hyprland
+hypridle
+hyprlock
+hyprpolkitagent
+xdg-desktop-portal-hyprland
+xdg-desktop-portal-gtk
+umockdev
+
+# =============================================================================
+# Display Manager (SDDM)
+# =============================================================================
+sddm
+qt6-declarative
+qt6-svg
+qt6-virtualkeyboard
+qt6-multimedia-ffmpeg
+qt5-quickcontrols2
+qt6-5compat
+
+# =============================================================================
+# Audio (PipeWire)
+# =============================================================================
+pipewire
+wireplumber
+pipewire-audio
+pipewire-alsa
+pipewire-pulse
+sof-firmware
+
+# =============================================================================
+# Networking
+# =============================================================================
+networkmanager
+network-manager-applet
+openssh
+iwd
+dhcpcd
+
+# =============================================================================
+# Bluetooth
+# =============================================================================
+bluez
+bluez-utils
+blueman
+
+# =============================================================================
+# Terminal & Shell
+# =============================================================================
+kitty
+foot
+zsh
+zsh-completions
+fzf
+lsd
+bat
+tmux
+nano
+
+# =============================================================================
+# Desktop Utilities
+# =============================================================================
+waybar
+rofi-wayland
+swaync
+wlogout
+swww
+cliphist
+grim
+slurp
+swappy
+wallust
+brightnessctl
+playerctl
+pamixer
+pavucontrol
+wl-clipboard
+yad
+imagemagick
+
+# =============================================================================
+# File Manager
+# =============================================================================
+thunar
+thunar-volman
+tumbler
+ffmpegthumbnailer
+thunar-archive-plugin
+xarchiver
+gvfs
+gvfs-mtp
+
+# =============================================================================
+# Browsers
+# =============================================================================
+firefox
+chromium
+
+# =============================================================================
+# Editors & Dev Tools
+# =============================================================================
+neovim
+npm
+github-cli
+
+# =============================================================================
+# Media
+# =============================================================================
+mpv
+mpv-mpris
+obs-studio
+vlc
+loupe
+yt-dlp
+
+# =============================================================================
+# System Utilities
+# =============================================================================
+btop
+cava
+fastfetch
+nvtop
+gnome-system-monitor
+inxi
+pciutils
+usbutils
+dmidecode
+
+# =============================================================================
+# File Utilities
+# =============================================================================
+yazi
+zoxide
+rclone
+unzip
+wget
+curl
+jq
+bc
+xdg-user-dirs
+xdg-utils
+pacman-contrib
+
+# =============================================================================
+# Theming & Appearance
+# =============================================================================
+kvantum
+qt5ct
+qt6ct
+nwg-look
+nwg-displays
+papirus-icon-theme
+gtk-engine-murrine
+
+# =============================================================================
+# Fonts
+# =============================================================================
+adobe-source-code-pro-fonts
+noto-fonts
+noto-fonts-emoji
+otf-font-awesome
+ttf-droid
+ttf-fira-code
+ttf-jetbrains-mono
+ttf-jetbrains-mono-nerd
+ttf-victor-mono
+
+# =============================================================================
+# Graphics Drivers
+# =============================================================================
+mesa
+nvidia-dkms
+nvidia-settings
+nvidia-utils
+libva
+libva-nvidia-driver
+
+# =============================================================================
+# Installer Dependencies
+# =============================================================================
+arch-install-scripts
+parted
+dosfstools
+btrfs-progs
+e2fsprogs
+gptfdisk
+dialog
+cryptsetup
+lvm2
+
+# =============================================================================
+# Additional Utilities
+# =============================================================================
+qalculate-gtk
+mousepad
+libspng
+python-requests
+python-pyquery
+sudo
+reflector
+
+# =============================================================================
+# Firmware
+# =============================================================================
+linux-firmware-marvell
+broadcom-wl
+
+# =============================================================================
+# Live ISO Utilities (from releng)
+# =============================================================================
+squashfs-tools
+mtools

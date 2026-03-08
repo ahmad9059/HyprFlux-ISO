@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=FrontendMasters
+Exec=chromium --new-window --ozone-platform=wayland --app=https://frontendmasters.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-frontendmasters.png
+Type=Application
+Categories=Network;WebApp;

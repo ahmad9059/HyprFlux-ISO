@@ -1,0 +1,9 @@
+[Trigger]
+Operation = Install
+Type = Package
+Target = glibc
+
+[Action]
+Description = Generating locales...
+When = PostTransaction
+Exec = /usr/bin/locale-gen

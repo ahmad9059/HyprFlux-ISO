@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/share/hooks/archiso/*
+
+[Action]
+Description = Removing custom hooks from airootfs...
+When = PostTransaction
+Exec = /bin/rm -f /etc/pacman.d/hooks/40-locale-gen.hook /etc/pacman.d/hooks/zzzz99-remove-custom-hooks-from-airootfs.hook

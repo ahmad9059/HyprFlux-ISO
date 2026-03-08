@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Claude
+Exec=chromium --new-window --ozone-platform=wayland --app=https://claude.ai
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-claude.png
+Type=Application
+Categories=Network;WebApp;

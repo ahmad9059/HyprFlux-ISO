@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "arch-linux-triage": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "c9858a61f9e06ceef21f3ff7202d06e3f0e8b7d5699bb7d18fc649fcbb0ab309"
+    }
+  }
+}

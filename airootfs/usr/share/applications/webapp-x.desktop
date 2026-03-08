@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=X
+Exec=chromium --new-window --ozone-platform=wayland --app=https://x.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-x.png
+Type=Application
+Categories=Network;WebApp;

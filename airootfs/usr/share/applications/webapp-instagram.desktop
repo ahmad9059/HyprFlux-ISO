@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Instagram
+Exec=chromium --new-window --ozone-platform=wayland --app=https://www.instagram.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-instagram.png
+Type=Application
+Categories=Network;WebApp;

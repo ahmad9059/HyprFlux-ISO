@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Gmail
+Exec=chromium --new-window --ozone-platform=wayland --app=https://mail.google.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-gmail.png
+Type=Application
+Categories=Network;WebApp;

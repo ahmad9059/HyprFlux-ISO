@@ -1,0 +1,10 @@
+root:x:0:root
+wheel:x:10:hyprflux
+video:x:12:hyprflux
+audio:x:17:hyprflux
+lp:x:7:hyprflux
+optical:x:93:hyprflux
+network:x:90:hyprflux
+input:x:97:hyprflux
+storage:x:98:hyprflux
+hyprflux:x:1000:

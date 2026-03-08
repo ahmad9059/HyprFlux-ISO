@@ -1,0 +1,13 @@
+[Unit]
+Description=HyprFlux NVIDIA GPU Auto-Detection
+DefaultDependencies=no
+Before=display-manager.service
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/hyprflux-nvidia-detect
+
+[Install]
+WantedBy=multi-user.target

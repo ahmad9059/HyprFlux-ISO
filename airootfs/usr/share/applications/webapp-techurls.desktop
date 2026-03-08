@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=TechURLs
+Exec=chromium --new-window --ozone-platform=wayland --app=https://techurls.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-techurls.png
+Type=Application
+Categories=Network;WebApp;

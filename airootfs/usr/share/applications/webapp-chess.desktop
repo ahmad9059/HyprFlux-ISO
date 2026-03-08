@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Chess
+Exec=chromium --new-window --ozone-platform=wayland --app=https://www.chess.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-chess.png
+Type=Application
+Categories=Network;WebApp;

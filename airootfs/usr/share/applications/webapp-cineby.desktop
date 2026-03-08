@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Cineby
+Exec=chromium --new-window --ozone-platform=wayland --app=https://www.cineby.app
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-cineby.png
+Type=Application
+Categories=Network;WebApp;

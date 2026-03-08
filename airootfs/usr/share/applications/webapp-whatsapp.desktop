@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=WhatsApp
+Exec=chromium --new-window --ozone-platform=wayland --app=https://web.whatsapp.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-whatsapp.png
+Type=Application
+Categories=Network;WebApp;

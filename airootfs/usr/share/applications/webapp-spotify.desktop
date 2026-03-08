@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Spotify
+Exec=chromium --new-window --ozone-platform=wayland --app=https://open.spotify.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-spotify.png
+Type=Application
+Categories=Network;WebApp;

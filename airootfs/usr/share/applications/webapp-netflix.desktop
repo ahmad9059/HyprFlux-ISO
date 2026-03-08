@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Netflix
+Exec=chromium --new-window --ozone-platform=wayland --app=https://www.netflix.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-netflix.png
+Type=Application
+Categories=Network;WebApp;

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=GitHub
+Exec=chromium --new-window --ozone-platform=wayland --app=https://github.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-github.png
+Type=Application
+Categories=Network;WebApp;

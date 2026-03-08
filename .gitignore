@@ -1,0 +1,9 @@
+references/
+work/
+out/
+*.iso
+
+# AUR build artifacts (repo is generated, PKGBUILDs are tracked)
+aur/repo/
+aur/build/
+.agents/

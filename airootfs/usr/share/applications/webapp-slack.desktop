@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Slack
+Exec=chromium --new-window --ozone-platform=wayland --app=https://slack.com
+Icon=/usr/share/icons/hicolor/256x256/apps/webapp-slack.png
+Type=Application
+Categories=Network;WebApp;

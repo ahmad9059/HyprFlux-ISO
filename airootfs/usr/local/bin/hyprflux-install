@@ -1,0 +1,989 @@
+#!/bin/bash
+# ============================================================================
+# hyprflux-install — HyprFlux Custom TUI Disk Installer
+# ============================================================================
+# A comprehensive bash TUI installer using dialog for installing HyprFlux
+# (a pre-configured Hyprland desktop environment) to disk.
+#
+# Copyright (c) 2026 HyprFlux Project
+# License: MIT
+# ============================================================================
+set -euo pipefail
+
+# =============================================================================
+# Constants
+# =============================================================================
+readonly INSTALLER_VERSION="1.0.0"
+readonly DIALOG_HEIGHT=20
+readonly DIALOG_WIDTH=70
+readonly DIALOG_LIST_HEIGHT=12
+readonly MNT="/mnt"
+readonly LOG_FILE="/tmp/hyprflux-install.log"
+readonly BACKTITLE="HyprFlux Installer v${INSTALLER_VERSION}"
+
+# =============================================================================
+# Configuration (populated by user choices)
+# =============================================================================
+KEYMAP="us"
+TARGET_DISK=""
+BOOT_MODE=""        # "uefi" or "bios"
+PARTITION_SCHEME="" # "auto" or "auto-encrypt" or "manual"
+FILESYSTEM="ext4"   # "ext4" or "btrfs"
+TIMEZONE=""
+LOCALE="en_US.UTF-8"
+HOSTNAME_INPUT="hyprflux"
+USERNAME=""
+USER_PASSWORD=""
+ROOT_PASSWORD=""
+BOOTLOADER="grub"   # "grub" or "systemd-boot" (uefi only)
+ENCRYPT=false
+LUKS_PASSWORD=""
+
+# Partition variables (set during partitioning)
+PART_BOOT=""
+PART_ROOT=""
+PART_SWAP=""
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "${LOG_FILE}"
+}
+
+die() {
+    dialog --backtitle "${BACKTITLE}" --title "Error" --msgbox "$1" 8 60
+    log "FATAL: $1"
+    exit 1
+}
+
+confirm_action() {
+    dialog --backtitle "${BACKTITLE}" --title "Confirm" --yesno "$1" 8 60
+}
+
+show_progress() {
+    local title="$1"
+    local cmd="$2"
+    log "Running: ${cmd}"
+    eval "${cmd}" >> "${LOG_FILE}" 2>&1 &
+    local pid=$!
+    dialog --backtitle "${BACKTITLE}" --title "${title}" --infobox "${title}...\n\nPlease wait." 6 50
+    wait "${pid}" || return 1
+}
+
+run_cmd() {
+    log "CMD: $*"
+    "$@" >> "${LOG_FILE}" 2>&1
+}
+
+# =============================================================================
+# Step 0: Pre-flight Checks
+# =============================================================================
+preflight_check() {
+    # Must be root
+    if [[ $EUID -ne 0 ]]; then
+        echo "This installer must be run as root."
+        echo "Usage: sudo hyprflux-install"
+        exit 1
+    fi
+
+    # Check for required tools
+    local missing=()
+    for tool in dialog parted mkfs.ext4 mkfs.fat pacstrap genfstab arch-chroot; do
+        if ! command -v "${tool}" &>/dev/null; then
+            missing+=("${tool}")
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        die "Missing required tools: ${missing[*]}\nPlease install them first."
+    fi
+
+    # Detect boot mode
+    if [[ -d /sys/firmware/efi/efivars ]]; then
+        BOOT_MODE="uefi"
+    else
+        BOOT_MODE="bios"
+    fi
+    log "Boot mode: ${BOOT_MODE}"
+
+    # Ensure network connectivity
+    if ! ping -c 1 -W 3 archlinux.org &>/dev/null; then
+        dialog --backtitle "${BACKTITLE}" --title "Network Warning" \
+            --yesno "No internet connection detected.\n\nThe installer requires internet to download packages.\nContinue anyway?" 10 60 || exit 0
+    fi
+
+    # Initialize log
+    echo "=== HyprFlux Install Log ===" > "${LOG_FILE}"
+    echo "Date: $(date)" >> "${LOG_FILE}"
+    echo "Boot mode: ${BOOT_MODE}" >> "${LOG_FILE}"
+    echo "===========================" >> "${LOG_FILE}"
+}
+
+# =============================================================================
+# Step 1: Welcome Screen
+# =============================================================================
+show_welcome() {
+    dialog --backtitle "${BACKTITLE}" --title "Welcome to HyprFlux" --msgbox "
+    ╦ ╦┬ ┬┌─┐┬─┐╔═╗┬  ┬ ┬─┐ ┬
+    ╠═╣└┬┘├─┘├┬┘╠╣ │  │ │┌┴┬┘
+    ╩ ╩ ┴ ┴  ┴└─╚  ┴─┘└─┘┴ └─
+
+    A pre-configured Hyprland desktop environment
+    based on Arch Linux.
+
+    Website:  https://hyprflux.dev
+    Version:  ${INSTALLER_VERSION}
+    Boot:     ${BOOT_MODE^^}
+
+    This installer will guide you through installing
+    HyprFlux to your disk.
+
+    Press OK to continue." ${DIALOG_HEIGHT} ${DIALOG_WIDTH}
+}
+
+# =============================================================================
+# Step 2: Keyboard Layout
+# =============================================================================
+select_keymap() {
+    local keymaps
+    keymaps=$(localectl list-keymaps 2>/dev/null | head -100)
+    local options=()
+    while IFS= read -r km; do
+        options+=("${km}" "")
+    done <<< "${keymaps}"
+
+    KEYMAP=$(dialog --backtitle "${BACKTITLE}" --title "Keyboard Layout" \
+        --default-item "us" \
+        --menu "Select your keyboard layout:" \
+        ${DIALOG_HEIGHT} ${DIALOG_WIDTH} ${DIALOG_LIST_HEIGHT} \
+        "${options[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+    loadkeys "${KEYMAP}" 2>/dev/null || true
+    log "Keymap: ${KEYMAP}"
+}
+
+# =============================================================================
+# Step 3: Disk Selection
+# =============================================================================
+select_disk() {
+    local disks=()
+    while IFS= read -r line; do
+        local name size
+        name=$(echo "${line}" | awk '{print $1}')
+        size=$(echo "${line}" | awk '{print $2}')
+        disks+=("/dev/${name}" "${size}")
+    done < <(lsblk -dpno NAME,SIZE 2>/dev/null | grep -E '^/dev/(sd|nvme|vd)' | sed 's|/dev/||')
+
+    if [[ ${#disks[@]} -eq 0 ]]; then
+        die "No suitable disks found."
+    fi
+
+    TARGET_DISK=$(dialog --backtitle "${BACKTITLE}" --title "Disk Selection" \
+        --menu "Select the target disk for installation:\n\n⚠  WARNING: All data on the selected disk will be ERASED!" \
+        ${DIALOG_HEIGHT} ${DIALOG_WIDTH} ${DIALOG_LIST_HEIGHT} \
+        "${disks[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+    # Confirm disk selection
+    local disk_info
+    disk_info=$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "${TARGET_DISK}" 2>/dev/null)
+    confirm_action "You selected: ${TARGET_DISK}\n\n${disk_info}\n\n⚠  ALL DATA WILL BE ERASED!\n\nAre you sure?" || select_disk
+    log "Target disk: ${TARGET_DISK}"
+}
+
+# =============================================================================
+# Step 4: Partition Scheme
+# =============================================================================
+select_partition_scheme() {
+    local options=(
+        "auto"          "Automatic partitioning (recommended)"
+        "auto-encrypt"  "Automatic with LUKS encryption"
+        "manual"        "Manual partitioning (launch cfdisk)"
+    )
+
+    PARTITION_SCHEME=$(dialog --backtitle "${BACKTITLE}" --title "Partition Scheme" \
+        --menu "How would you like to partition ${TARGET_DISK}?\n\nBoot mode: ${BOOT_MODE^^}" \
+        ${DIALOG_HEIGHT} ${DIALOG_WIDTH} ${DIALOG_LIST_HEIGHT} \
+        "${options[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+    if [[ "${PARTITION_SCHEME}" == "auto-encrypt" ]]; then
+        ENCRYPT=true
+        LUKS_PASSWORD=$(dialog --backtitle "${BACKTITLE}" --title "LUKS Encryption" \
+            --insecure --passwordbox "Enter LUKS encryption password:" 8 60 3>&1 1>&2 2>&3) || exit 0
+        local confirm_pass
+        confirm_pass=$(dialog --backtitle "${BACKTITLE}" --title "LUKS Encryption" \
+            --insecure --passwordbox "Confirm LUKS encryption password:" 8 60 3>&1 1>&2 2>&3) || exit 0
+        if [[ "${LUKS_PASSWORD}" != "${confirm_pass}" ]]; then
+            dialog --backtitle "${BACKTITLE}" --title "Error" --msgbox "Passwords do not match. Please try again." 6 50
+            select_partition_scheme
+            return
+        fi
+    fi
+
+    log "Partition scheme: ${PARTITION_SCHEME}, encrypt: ${ENCRYPT}"
+}
+
+# =============================================================================
+# Step 5: Filesystem Choice
+# =============================================================================
+select_filesystem() {
+    local options=(
+        "ext4"  "ext4 — Stable, mature (recommended)"
+        "btrfs" "btrfs — Snapshots, compression, modern"
+    )
+
+    FILESYSTEM=$(dialog --backtitle "${BACKTITLE}" --title "Filesystem" \
+        --menu "Select the root filesystem:" \
+        ${DIALOG_HEIGHT} ${DIALOG_WIDTH} ${DIALOG_LIST_HEIGHT} \
+        "${options[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+    log "Filesystem: ${FILESYSTEM}"
+}
+
+# =============================================================================
+# Step 6: Timezone
+# =============================================================================
+select_timezone() {
+    # Region selection
+    local regions=()
+    while IFS= read -r r; do
+        regions+=("${r}" "")
+    done < <(find /usr/share/zoneinfo -maxdepth 1 -type d -not -name 'zoneinfo' -not -name 'posix' -not -name 'right' -printf '%f\n' | sort)
+
+    local region
+    region=$(dialog --backtitle "${BACKTITLE}" --title "Timezone — Region" \
+        --menu "Select your region:" \
+        ${DIALOG_HEIGHT} ${DIALOG_WIDTH} ${DIALOG_LIST_HEIGHT} \
+        "${regions[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+    # City selection
+    local cities=()
+    while IFS= read -r c; do
+        cities+=("${c}" "")
+    done < <(find "/usr/share/zoneinfo/${region}" -maxdepth 1 -type f -printf '%f\n' | sort)
+
+    local city
+    city=$(dialog --backtitle "${BACKTITLE}" --title "Timezone — City" \
+        --menu "Select your city:" \
+        ${DIALOG_HEIGHT} ${DIALOG_WIDTH} ${DIALOG_LIST_HEIGHT} \
+        "${cities[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+    TIMEZONE="${region}/${city}"
+    log "Timezone: ${TIMEZONE}"
+}
+
+# =============================================================================
+# Step 7: Locale
+# =============================================================================
+select_locale() {
+    local locales=(
+        "en_US.UTF-8" "English (US)"
+        "en_GB.UTF-8" "English (UK)"
+        "de_DE.UTF-8" "German"
+        "fr_FR.UTF-8" "French"
+        "es_ES.UTF-8" "Spanish"
+        "it_IT.UTF-8" "Italian"
+        "pt_BR.UTF-8" "Portuguese (Brazil)"
+        "ja_JP.UTF-8" "Japanese"
+        "ko_KR.UTF-8" "Korean"
+        "zh_CN.UTF-8" "Chinese (Simplified)"
+        "ar_SA.UTF-8" "Arabic"
+        "ru_RU.UTF-8" "Russian"
+    )
+
+    LOCALE=$(dialog --backtitle "${BACKTITLE}" --title "Locale" \
+        --default-item "en_US.UTF-8" \
+        --menu "Select your locale:" \
+        ${DIALOG_HEIGHT} ${DIALOG_WIDTH} ${DIALOG_LIST_HEIGHT} \
+        "${locales[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+    log "Locale: ${LOCALE}"
+}
+
+# =============================================================================
+# Step 8: Hostname
+# =============================================================================
+input_hostname() {
+    HOSTNAME_INPUT=$(dialog --backtitle "${BACKTITLE}" --title "Hostname" \
+        --inputbox "Enter a hostname for your system:" 8 60 "hyprflux" \
+        3>&1 1>&2 2>&3) || exit 0
+
+    if [[ -z "${HOSTNAME_INPUT}" ]]; then
+        HOSTNAME_INPUT="hyprflux"
+    fi
+    log "Hostname: ${HOSTNAME_INPUT}"
+}
+
+# =============================================================================
+# Step 9: User Creation
+# =============================================================================
+create_user() {
+    USERNAME=$(dialog --backtitle "${BACKTITLE}" --title "User Account" \
+        --inputbox "Enter your username:" 8 60 "" \
+        3>&1 1>&2 2>&3) || exit 0
+
+    if [[ -z "${USERNAME}" ]]; then
+        dialog --backtitle "${BACKTITLE}" --title "Error" --msgbox "Username cannot be empty." 6 40
+        create_user
+        return
+    fi
+
+    USER_PASSWORD=$(dialog --backtitle "${BACKTITLE}" --title "User Password" \
+        --insecure --passwordbox "Enter password for '${USERNAME}':" 8 60 \
+        3>&1 1>&2 2>&3) || exit 0
+
+    local confirm_pass
+    confirm_pass=$(dialog --backtitle "${BACKTITLE}" --title "User Password" \
+        --insecure --passwordbox "Confirm password for '${USERNAME}':" 8 60 \
+        3>&1 1>&2 2>&3) || exit 0
+
+    if [[ "${USER_PASSWORD}" != "${confirm_pass}" ]]; then
+        dialog --backtitle "${BACKTITLE}" --title "Error" --msgbox "Passwords do not match." 6 40
+        create_user
+        return
+    fi
+
+    # Root password (optional)
+    dialog --backtitle "${BACKTITLE}" --title "Root Password" \
+        --yesno "Set a separate root password?\n\n(If no, root will use the same password as '${USERNAME}')" 8 60
+    if [[ $? -eq 0 ]]; then
+        ROOT_PASSWORD=$(dialog --backtitle "${BACKTITLE}" --title "Root Password" \
+            --insecure --passwordbox "Enter root password:" 8 60 \
+            3>&1 1>&2 2>&3) || exit 0
+    else
+        ROOT_PASSWORD="${USER_PASSWORD}"
+    fi
+
+    log "Username: ${USERNAME}"
+}
+
+# =============================================================================
+# Step 10: Bootloader Selection
+# =============================================================================
+select_bootloader() {
+    if [[ "${BOOT_MODE}" == "uefi" ]]; then
+        local options=(
+            "grub"         "GRUB — Feature-rich, Vimix theme (recommended)"
+            "systemd-boot" "systemd-boot — Minimal, fast"
+        )
+        BOOTLOADER=$(dialog --backtitle "${BACKTITLE}" --title "Bootloader" \
+            --menu "Select a bootloader:" \
+            ${DIALOG_HEIGHT} ${DIALOG_WIDTH} ${DIALOG_LIST_HEIGHT} \
+            "${options[@]}" 3>&1 1>&2 2>&3) || exit 0
+    else
+        BOOTLOADER="grub"
+        dialog --backtitle "${BACKTITLE}" --title "Bootloader" \
+            --msgbox "BIOS mode detected.\nGRUB will be installed to MBR." 7 50
+    fi
+    log "Bootloader: ${BOOTLOADER}"
+}
+
+# =============================================================================
+# Step 11: Review Summary
+# =============================================================================
+show_summary() {
+    local encrypt_str="No"
+    [[ "${ENCRYPT}" == true ]] && encrypt_str="Yes (LUKS)"
+
+    local summary="
+ ┌─────────────────────────────────────────────┐
+ │          Installation Summary                │
+ ├─────────────────────────────────────────────┤
+ │ Boot Mode:    ${BOOT_MODE^^}
+ │ Target Disk:  ${TARGET_DISK}
+ │ Partitioning: ${PARTITION_SCHEME}
+ │ Encryption:   ${encrypt_str}
+ │ Filesystem:   ${FILESYSTEM}
+ │ Bootloader:   ${BOOTLOADER}
+ │ Timezone:     ${TIMEZONE}
+ │ Locale:       ${LOCALE}
+ │ Hostname:     ${HOSTNAME_INPUT}
+ │ Username:     ${USERNAME}
+ │ Keymap:       ${KEYMAP}
+ └─────────────────────────────────────────────┘
+
+ ⚠  WARNING: This will ERASE all data on ${TARGET_DISK}!
+
+ Proceed with installation?"
+
+    dialog --backtitle "${BACKTITLE}" --title "Review" --yesno "${summary}" 22 60 || exit 0
+}
+
+# =============================================================================
+# Installation Functions
+# =============================================================================
+
+# Get partition suffix (handles nvme vs sd naming)
+get_part_suffix() {
+    local disk="$1"
+    local num="$2"
+    if [[ "${disk}" == *"nvme"* ]] || [[ "${disk}" == *"mmcblk"* ]]; then
+        echo "${disk}p${num}"
+    else
+        echo "${disk}${num}"
+    fi
+}
+
+partition_disk() {
+    dialog --backtitle "${BACKTITLE}" --title "Partitioning" --infobox "Partitioning ${TARGET_DISK}..." 5 50
+
+    if [[ "${PARTITION_SCHEME}" == "manual" ]]; then
+        cfdisk "${TARGET_DISK}"
+        # Ask user to identify partitions
+        PART_BOOT=$(dialog --backtitle "${BACKTITLE}" --title "Identify Partitions" \
+            --inputbox "Enter the boot partition (e.g., /dev/sda1):" 8 60 "" \
+            3>&1 1>&2 2>&3) || exit 0
+        PART_ROOT=$(dialog --backtitle "${BACKTITLE}" --title "Identify Partitions" \
+            --inputbox "Enter the root partition (e.g., /dev/sda2):" 8 60 "" \
+            3>&1 1>&2 2>&3) || exit 0
+        return
+    fi
+
+    # Wipe existing partition table
+    run_cmd wipefs -af "${TARGET_DISK}"
+    run_cmd sgdisk -Z "${TARGET_DISK}"
+
+    if [[ "${BOOT_MODE}" == "uefi" ]]; then
+        # GPT: ESP (512MB) + Root (rest)
+        run_cmd sgdisk -n 1:0:+512M -t 1:ef00 -c 1:"EFI System" "${TARGET_DISK}"
+        run_cmd sgdisk -n 2:0:0 -t 2:8300 -c 2:"Linux root" "${TARGET_DISK}"
+        PART_BOOT=$(get_part_suffix "${TARGET_DISK}" 1)
+        PART_ROOT=$(get_part_suffix "${TARGET_DISK}" 2)
+    else
+        # MBR: Boot (512MB) + Root (rest)
+        run_cmd parted -s "${TARGET_DISK}" mklabel msdos
+        run_cmd parted -s "${TARGET_DISK}" mkpart primary ext4 1MiB 513MiB
+        run_cmd parted -s "${TARGET_DISK}" set 1 boot on
+        run_cmd parted -s "${TARGET_DISK}" mkpart primary ext4 513MiB 100%
+        PART_BOOT=$(get_part_suffix "${TARGET_DISK}" 1)
+        PART_ROOT=$(get_part_suffix "${TARGET_DISK}" 2)
+    fi
+
+    # Wait for kernel to recognize partitions
+    sleep 2
+    run_cmd partprobe "${TARGET_DISK}"
+    sleep 1
+
+    log "Partitions: boot=${PART_BOOT}, root=${PART_ROOT}"
+}
+
+format_partitions() {
+    dialog --backtitle "${BACKTITLE}" --title "Formatting" --infobox "Formatting partitions..." 5 50
+
+    # Format boot partition
+    if [[ "${BOOT_MODE}" == "uefi" ]]; then
+        run_cmd mkfs.fat -F32 -n HYPRBOOT "${PART_BOOT}"
+    else
+        run_cmd mkfs.ext4 -L HYPRBOOT "${PART_BOOT}"
+    fi
+
+    # Handle encryption
+    local root_device="${PART_ROOT}"
+    if [[ "${ENCRYPT}" == true ]]; then
+        dialog --backtitle "${BACKTITLE}" --title "Encryption" --infobox "Setting up LUKS encryption..." 5 50
+        echo -n "${LUKS_PASSWORD}" | run_cmd cryptsetup luksFormat --type luks2 "${PART_ROOT}" -
+        echo -n "${LUKS_PASSWORD}" | run_cmd cryptsetup open "${PART_ROOT}" cryptroot -
+        root_device="/dev/mapper/cryptroot"
+    fi
+
+    # Format root partition
+    case "${FILESYSTEM}" in
+        ext4)
+            run_cmd mkfs.ext4 -L HYPRROOT "${root_device}"
+            ;;
+        btrfs)
+            run_cmd mkfs.btrfs -f -L HYPRROOT "${root_device}"
+            ;;
+    esac
+
+    log "Formatting complete"
+}
+
+mount_partitions() {
+    dialog --backtitle "${BACKTITLE}" --title "Mounting" --infobox "Mounting partitions..." 5 50
+
+    local root_device="${PART_ROOT}"
+    [[ "${ENCRYPT}" == true ]] && root_device="/dev/mapper/cryptroot"
+
+    if [[ "${FILESYSTEM}" == "btrfs" ]]; then
+        # Create btrfs subvolumes
+        run_cmd mount "${root_device}" "${MNT}"
+        run_cmd btrfs subvolume create "${MNT}/@"
+        run_cmd btrfs subvolume create "${MNT}/@home"
+        run_cmd btrfs subvolume create "${MNT}/@log"
+        run_cmd btrfs subvolume create "${MNT}/@cache"
+        run_cmd umount "${MNT}"
+
+        # Mount subvolumes
+        run_cmd mount -o subvol=@,compress=zstd,noatime "${root_device}" "${MNT}"
+        mkdir -p "${MNT}"/{home,var/log,var/cache}
+        run_cmd mount -o subvol=@home,compress=zstd,noatime "${root_device}" "${MNT}/home"
+        run_cmd mount -o subvol=@log,compress=zstd,noatime "${root_device}" "${MNT}/var/log"
+        run_cmd mount -o subvol=@cache,compress=zstd,noatime "${root_device}" "${MNT}/var/cache"
+    else
+        run_cmd mount "${root_device}" "${MNT}"
+    fi
+
+    # Mount boot
+    if [[ "${BOOT_MODE}" == "uefi" ]]; then
+        mkdir -p "${MNT}/boot/efi"
+        run_cmd mount "${PART_BOOT}" "${MNT}/boot/efi"
+    else
+        mkdir -p "${MNT}/boot"
+        run_cmd mount "${PART_BOOT}" "${MNT}/boot"
+    fi
+
+    log "Mount complete"
+}
+
+install_base_system() {
+    dialog --backtitle "${BACKTITLE}" --title "Installing" \
+        --infobox "Installing base system...\n\nThis may take several minutes depending on your internet speed." 7 60
+
+    # Core packages for pacstrap
+    local packages=(
+        base linux linux-firmware linux-headers base-devel
+        grub efibootmgr mkinitcpio plymouth syslinux
+        networkmanager openssh sudo
+        zsh git nano
+    )
+
+    # Add microcode
+    packages+=(amd-ucode intel-ucode)
+
+    # Add filesystem tools
+    packages+=(dosfstools e2fsprogs btrfs-progs)
+
+    # Add encryption tools if needed
+    [[ "${ENCRYPT}" == true ]] && packages+=(cryptsetup lvm2)
+
+    run_cmd pacstrap -K "${MNT}" "${packages[@]}"
+
+    log "Base system installed"
+}
+
+install_hyprflux_packages() {
+    dialog --backtitle "${BACKTITLE}" --title "Installing HyprFlux" \
+        --infobox "Installing HyprFlux desktop packages...\n\nThis may take a while." 7 60
+
+    # HyprFlux desktop packages
+    local packages=(
+        # Hyprland
+        hyprland hypridle hyprlock hyprpolkitagent
+        xdg-desktop-portal-hyprland xdg-desktop-portal-gtk
+
+        # Display Manager
+        sddm qt6-declarative qt6-svg qt6-virtualkeyboard
+        qt6-multimedia-ffmpeg qt5-quickcontrols2 qt6-5compat
+
+        # Audio
+        pipewire wireplumber pipewire-audio pipewire-alsa pipewire-pulse sof-firmware
+
+        # Networking & Bluetooth
+        network-manager-applet iwd dhcpcd
+        bluez bluez-utils blueman
+
+        # Terminal & Shell
+        kitty foot zsh-completions fzf lsd bat tmux
+
+        # Desktop utilities
+        waybar rofi-wayland swaync wlogout swww cliphist
+        grim slurp swappy wallust brightnessctl playerctl
+        pamixer pavucontrol wl-clipboard yad imagemagick
+
+        # File Manager
+        thunar thunar-volman tumbler ffmpegthumbnailer
+        thunar-archive-plugin xarchiver gvfs gvfs-mtp
+
+        # Browsers
+        firefox chromium
+
+        # Editors & Tools
+        neovim npm github-cli
+
+        # Media
+        mpv mpv-mpris obs-studio vlc loupe yt-dlp
+
+        # System utilities
+        btop cava fastfetch nvtop gnome-system-monitor inxi
+        pciutils usbutils dmidecode
+
+        # File utilities
+        yazi zoxide rclone unzip wget curl jq bc
+        xdg-user-dirs xdg-utils pacman-contrib
+
+        # Theming
+        kvantum qt5ct qt6ct nwg-look nwg-displays
+        papirus-icon-theme gtk-engine-murrine
+
+        # Fonts
+        adobe-source-code-pro-fonts noto-fonts noto-fonts-emoji
+        otf-font-awesome ttf-droid ttf-fira-code
+        ttf-jetbrains-mono ttf-jetbrains-mono-nerd ttf-victor-mono
+
+        # Graphics
+        mesa libva
+
+        # NVIDIA (install but don't force load)
+        nvidia-dkms nvidia-settings nvidia-utils libva-nvidia-driver
+
+        # Additional
+        qalculate-gtk mousepad reflector python-requests python-pyquery
+        dialog archlinux-keyring
+    )
+
+    run_cmd arch-chroot "${MNT}" pacman -S --noconfirm --needed "${packages[@]}"
+
+    log "HyprFlux packages installed"
+}
+
+generate_fstab() {
+    dialog --backtitle "${BACKTITLE}" --title "Generating fstab" --infobox "Generating /etc/fstab..." 5 50
+    run_cmd genfstab -U "${MNT}" >> "${MNT}/etc/fstab"
+    log "fstab generated"
+}
+
+configure_system() {
+    dialog --backtitle "${BACKTITLE}" --title "Configuring" --infobox "Configuring system..." 5 50
+
+    # Timezone
+    run_cmd arch-chroot "${MNT}" ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
+    run_cmd arch-chroot "${MNT}" hwclock --systohc
+
+    # Locale
+    echo "${LOCALE} UTF-8" > "${MNT}/etc/locale.gen"
+    run_cmd arch-chroot "${MNT}" locale-gen
+    echo "LANG=${LOCALE}" > "${MNT}/etc/locale.conf"
+
+    # Keymap
+    echo "KEYMAP=${KEYMAP}" > "${MNT}/etc/vconsole.conf"
+
+    # Hostname
+    echo "${HOSTNAME_INPUT}" > "${MNT}/etc/hostname"
+    cat > "${MNT}/etc/hosts" <<EOF
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   ${HOSTNAME_INPUT}.localdomain ${HOSTNAME_INPUT}
+EOF
+
+    # OS release
+    cat > "${MNT}/etc/os-release" <<EOF
+NAME="HyprFlux"
+PRETTY_NAME="HyprFlux"
+ID=hyprflux
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;23;147;209"
+HOME_URL="https://hyprflux.dev"
+DOCUMENTATION_URL="https://github.com/ahmad9059/HyprFlux"
+LOGO=hyprflux
+EOF
+
+    log "System configured"
+}
+
+setup_users() {
+    dialog --backtitle "${BACKTITLE}" --title "Users" --infobox "Setting up user accounts..." 5 50
+
+    # Set root password
+    echo "root:${ROOT_PASSWORD}" | arch-chroot "${MNT}" chpasswd
+
+    # Create user
+    run_cmd arch-chroot "${MNT}" useradd -m -G wheel,video,audio,input,storage,optical,network,lp -s /usr/bin/zsh "${USERNAME}"
+    echo "${USERNAME}:${USER_PASSWORD}" | arch-chroot "${MNT}" chpasswd
+
+    # Enable sudo for wheel group
+    sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' "${MNT}/etc/sudoers"
+
+    log "Users configured"
+}
+
+configure_mkinitcpio() {
+    dialog --backtitle "${BACKTITLE}" --title "Initramfs" --infobox "Configuring mkinitcpio..." 5 50
+
+    local hooks="base udev autodetect microcode modconf kms keyboard keymap consolefont block"
+    if [[ "${ENCRYPT}" == true ]]; then
+        hooks+=" encrypt"
+    fi
+    if [[ "${FILESYSTEM}" == "btrfs" ]]; then
+        hooks+=" filesystems btrfs"
+    else
+        hooks+=" filesystems fsck"
+    fi
+    hooks+=" plymouth"
+
+    sed -i "s/^HOOKS=.*/HOOKS=(${hooks})/" "${MNT}/etc/mkinitcpio.conf"
+    run_cmd arch-chroot "${MNT}" mkinitcpio -P
+
+    log "mkinitcpio configured"
+}
+
+install_bootloader() {
+    dialog --backtitle "${BACKTITLE}" --title "Bootloader" --infobox "Installing ${BOOTLOADER}..." 5 50
+
+    local kernel_params="quiet splash loglevel=3"
+    if [[ "${ENCRYPT}" == true ]]; then
+        local root_uuid
+        root_uuid=$(blkid -s UUID -o value "${PART_ROOT}")
+        kernel_params+=" cryptdevice=UUID=${root_uuid}:cryptroot root=/dev/mapper/cryptroot"
+    fi
+
+    if [[ "${BOOTLOADER}" == "grub" ]]; then
+        # Copy Vimix theme if available
+        if [[ -d "/usr/share/grub/themes/Vimix" ]]; then
+            mkdir -p "${MNT}/usr/share/grub/themes/"
+            cp -a "/usr/share/grub/themes/Vimix" "${MNT}/usr/share/grub/themes/Vimix" 2>/dev/null || true
+        fi
+
+        # Configure GRUB
+        cat > "${MNT}/etc/default/grub" <<EOF
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=5
+GRUB_DISTRIBUTOR="HyprFlux"
+GRUB_CMDLINE_LINUX_DEFAULT="${kernel_params}"
+GRUB_CMDLINE_LINUX=""
+GRUB_PRELOAD_MODULES="part_gpt part_msdos"
+GRUB_GFXMODE=auto
+GRUB_GFXPAYLOAD_LINUX=keep
+GRUB_THEME="/usr/share/grub/themes/Vimix/theme.txt"
+GRUB_DISABLE_SUBMENU=y
+EOF
+
+        if [[ "${BOOT_MODE}" == "uefi" ]]; then
+            run_cmd arch-chroot "${MNT}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=HyprFlux
+        else
+            run_cmd arch-chroot "${MNT}" grub-install --target=i386-pc "${TARGET_DISK}"
+        fi
+        run_cmd arch-chroot "${MNT}" grub-mkconfig -o /boot/grub/grub.cfg
+
+    elif [[ "${BOOTLOADER}" == "systemd-boot" ]]; then
+        run_cmd arch-chroot "${MNT}" bootctl install
+
+        # Determine root device for systemd-boot
+        local root_opt
+        if [[ "${ENCRYPT}" == true ]]; then
+            local root_uuid
+            root_uuid=$(blkid -s UUID -o value "${PART_ROOT}")
+            root_opt="rd.luks.name=${root_uuid}=cryptroot root=/dev/mapper/cryptroot"
+        else
+            local root_uuid
+            root_uuid=$(blkid -s UUID -o value "${PART_ROOT}")
+            root_opt="root=UUID=${root_uuid}"
+        fi
+
+        mkdir -p "${MNT}/boot/loader/entries"
+        cat > "${MNT}/boot/loader/loader.conf" <<EOF
+default hyprflux.conf
+timeout 5
+console-mode max
+editor no
+EOF
+        cat > "${MNT}/boot/loader/entries/hyprflux.conf" <<EOF
+title   HyprFlux
+linux   /vmlinuz-linux
+initrd  /initramfs-linux.img
+options ${root_opt} ${kernel_params} rw
+EOF
+    fi
+
+    log "Bootloader installed"
+}
+
+enable_services() {
+    dialog --backtitle "${BACKTITLE}" --title "Services" --infobox "Enabling system services..." 5 50
+
+    local services=(
+        sddm
+        NetworkManager
+        bluetooth
+        sshd
+        plymouth-start
+    )
+
+    for svc in "${services[@]}"; do
+        run_cmd arch-chroot "${MNT}" systemctl enable "${svc}" 2>/dev/null || true
+    done
+
+    # Enable user services
+    run_cmd arch-chroot "${MNT}" systemctl --global enable pipewire.service 2>/dev/null || true
+    run_cmd arch-chroot "${MNT}" systemctl --global enable pipewire-pulse.service 2>/dev/null || true
+    run_cmd arch-chroot "${MNT}" systemctl --global enable wireplumber.service 2>/dev/null || true
+
+    log "Services enabled"
+}
+
+deploy_dotfiles() {
+    dialog --backtitle "${BACKTITLE}" --title "Dotfiles" --infobox "Deploying HyprFlux configuration..." 5 50
+
+    local user_home="${MNT}/home/${USERNAME}"
+
+    # Copy from /etc/skel (which has our pre-baked configs in the live ISO)
+    if [[ -d "/etc/skel/.config" ]]; then
+        cp -a /etc/skel/.config "${user_home}/"
+        cp -a /etc/skel/.zshrc "${user_home}/" 2>/dev/null || true
+        cp -a /etc/skel/.tmux.conf "${user_home}/" 2>/dev/null || true
+        cp -a /etc/skel/.tmuxifier "${user_home}/" 2>/dev/null || true
+    fi
+
+    # Copy SDDM theme
+    if [[ -d "/usr/share/sddm/themes/simple-sddm-2" ]]; then
+        mkdir -p "${MNT}/usr/share/sddm/themes/"
+        cp -a "/usr/share/sddm/themes/simple-sddm-2" "${MNT}/usr/share/sddm/themes/"
+    fi
+
+    # Copy SDDM config
+    cat > "${MNT}/etc/sddm.conf" <<EOF
+[General]
+InputMethod=
+Numlock=none
+
+[Theme]
+Current=simple-sddm-2
+
+[Users]
+MaximumUid=60513
+MinimumUid=1000
+EOF
+
+    # Copy Plymouth theme
+    if [[ -d "/usr/share/plymouth/themes/hyprland-mac-style" ]]; then
+        mkdir -p "${MNT}/usr/share/plymouth/themes/"
+        cp -a "/usr/share/plymouth/themes/hyprland-mac-style" "${MNT}/usr/share/plymouth/themes/"
+        run_cmd arch-chroot "${MNT}" plymouth-set-default-theme hyprland-mac-style 2>/dev/null || true
+    fi
+
+    # Copy GTK themes
+    if [[ -d "/usr/share/themes/HyprFlux-Compact" ]]; then
+        mkdir -p "${MNT}/usr/share/themes/"
+        cp -a "/usr/share/themes/HyprFlux-Compact" "${MNT}/usr/share/themes/"
+        cp -a "/usr/share/themes/Material-DeepOcean-BL" "${MNT}/usr/share/themes/" 2>/dev/null || true
+    fi
+
+    # Copy cursor themes
+    if [[ -d "/usr/share/icons/Future-black-cursors" ]]; then
+        mkdir -p "${MNT}/usr/share/icons/"
+        cp -a "/usr/share/icons/Future-black-cursors" "${MNT}/usr/share/icons/"
+    fi
+    if [[ -d "/usr/share/icons/Bibata-Modern-Classic" ]]; then
+        cp -a "/usr/share/icons/Bibata-Modern-Classic" "${MNT}/usr/share/icons/"
+    fi
+
+    # Copy wallpapers
+    if [[ -d "/usr/share/wallpapers" ]]; then
+        mkdir -p "${MNT}/usr/share/wallpapers/"
+        cp -a /usr/share/wallpapers/* "${MNT}/usr/share/wallpapers/" 2>/dev/null || true
+    fi
+
+    # Copy web app desktop entries
+    if ls /usr/share/applications/webapp-*.desktop &>/dev/null; then
+        mkdir -p "${MNT}/usr/share/applications/"
+        cp -a /usr/share/applications/webapp-*.desktop "${MNT}/usr/share/applications/" 2>/dev/null || true
+    fi
+
+    # Copy NVIDIA detection script
+    if [[ -f "/usr/local/bin/hyprflux-nvidia-detect" ]]; then
+        mkdir -p "${MNT}/usr/local/bin/"
+        cp -a "/usr/local/bin/hyprflux-nvidia-detect" "${MNT}/usr/local/bin/"
+        chmod 755 "${MNT}/usr/local/bin/hyprflux-nvidia-detect"
+    fi
+
+    # Fix ownership
+    run_cmd arch-chroot "${MNT}" chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}"
+
+    # Create user directories
+    run_cmd arch-chroot "${MNT}" su - "${USERNAME}" -c "xdg-user-dirs-update" 2>/dev/null || true
+
+    log "Dotfiles deployed"
+}
+
+configure_pacman() {
+    dialog --backtitle "${BACKTITLE}" --title "Pacman" --infobox "Configuring pacman..." 5 50
+
+    # Enable Color, ParallelDownloads, ILoveCandy, multilib
+    sed -i 's/^#Color/Color/' "${MNT}/etc/pacman.conf"
+    sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 5/' "${MNT}/etc/pacman.conf"
+    sed -i '/^ParallelDownloads/a ILoveCandy' "${MNT}/etc/pacman.conf"
+    sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' "${MNT}/etc/pacman.conf"
+
+    log "Pacman configured"
+}
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+cleanup() {
+    dialog --backtitle "${BACKTITLE}" --title "Cleanup" --infobox "Cleaning up..." 5 50
+
+    # Unmount everything
+    umount -R "${MNT}" 2>/dev/null || true
+
+    # Close LUKS if used
+    [[ "${ENCRYPT}" == true ]] && cryptsetup close cryptroot 2>/dev/null || true
+
+    log "Cleanup complete"
+}
+
+# =============================================================================
+# Main Installation Flow
+# =============================================================================
+main() {
+    preflight_check
+
+    # Gather user input
+    show_welcome
+    select_keymap
+    select_disk
+    select_partition_scheme
+    select_filesystem
+    select_timezone
+    select_locale
+    input_hostname
+    create_user
+    select_bootloader
+    show_summary
+
+    # Execute installation
+    (
+        partition_disk
+        format_partitions
+        mount_partitions
+        install_base_system
+        generate_fstab
+        configure_system
+        setup_users
+        install_hyprflux_packages
+        configure_mkinitcpio
+        install_bootloader
+        enable_services
+        deploy_dotfiles
+        configure_pacman
+    ) 2>&1 | dialog --backtitle "${BACKTITLE}" --title "Installing HyprFlux" \
+        --programbox "Installation progress..." 20 70
+
+    # Installation complete
+    dialog --backtitle "${BACKTITLE}" --title "Installation Complete!" --yesno "
+    ╦ ╦┬ ┬┌─┐┬─┐╔═╗┬  ┬ ┬─┐ ┬
+    ╠═╣└┬┘├─┘├┬┘╠╣ │  │ │┌┴┬┘
+    ╩ ╩ ┴ ┴  ┴└─╚  ┴─┘└─┘┴ └─
+
+    HyprFlux has been installed successfully!
+
+    Installation log: ${LOG_FILE}
+
+    Would you like to reboot now?" 16 60
+
+    if [[ $? -eq 0 ]]; then
+        cleanup
+        reboot
+    else
+        cleanup
+        clear
+        echo "HyprFlux installation complete!"
+        echo "You can reboot when ready with: reboot"
+        echo "Installation log: ${LOG_FILE}"
+    fi
+}
+
+# Trap for cleanup on unexpected exit
+trap cleanup EXIT
+
+main "$@"
