@@ -1,0 +1,56 @@
+# Base system
+base
+linux
+linux-firmware
+mkinitcpio
+mkinitcpio-archiso
+syslinux
+
+# Arch install tools
+arch-install-scripts
+gptfdisk
+dosfstools
+e2fsprogs
+parted
+
+# Bootloader (for target system + ISO EFI)
+grub
+efibootmgr
+
+# UEFI shell support (matching releng)
+edk2-shell
+
+# Network (NetworkManager only -- no systemd-networkd)
+networkmanager
+iwd
+iw
+wpa_supplicant
+dhcpcd
+openssh
+curl
+wget
+
+# TUI
+dialog
+
+# Utilities
+vim
+nano
+git
+sudo
+less
+reflector
+pciutils
+
+# CPU microcode
+amd-ucode
+intel-ucode
+sof-firmware
+
+# Shell (root shell is zsh -- .zlogin auto-launches installer)
+zsh
+
+# Filesystem tools
+btrfs-progs
+xfsprogs
+ntfs-3g

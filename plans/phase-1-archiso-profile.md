@@ -189,6 +189,9 @@ parted
 grub
 efibootmgr
 
+# UEFI shell support (matching releng)
+edk2-shell
+
 # Network (NetworkManager only — no systemd-networkd)
 networkmanager
 iwd
@@ -277,10 +280,12 @@ Uses the full hook set from the releng profile (including microcode, PXE support
 ```
 HOOKS=(base udev microcode modconf kms memdisk archiso archiso_loop_mnt archiso_pxe_common archiso_pxe_nbd archiso_pxe_http archiso_pxe_nfs block filesystems keyboard)
 COMPRESSION="xz"
+COMPRESSION_OPTIONS=(-9e)
 ```
 
 **Changes from original plan:**
 - Added `microcode`, `kms`, `memdisk`, PXE hooks (matching releng)
+- Added `COMPRESSION_OPTIONS=(-9e)` for maximum xz compression (matching releng)
 
 ---
 
@@ -289,11 +294,16 @@ COMPRESSION="xz"
 Overrides the default mkinitcpio preset to only build the `archiso` image, avoiding unnecessary fallback initramfs generation:
 
 ```bash
+ALL_kver="/boot/vmlinuz-linux"
+
 PRESETS=('archiso')
 
-archiso_kver="/boot/vmlinuz-linux"
+archiso_kver="${ALL_kver}"
+archiso_config="/etc/mkinitcpio.conf.d/archiso.conf"
 archiso_image="/boot/initramfs-linux.img"
 ```
+
+**NOTE:** `ALL_kver` and `archiso_config` are required — `ALL_kver` tells mkinitcpio where to find the kernel, and `archiso_config` links the preset to our drop-in config file. Without these, the initramfs won't be built correctly.
 
 ---
 
@@ -323,13 +333,17 @@ HandleLidSwitchDocked=ignore
 
 ### 14. `airootfs/etc/systemd/system/pacman-init.service` (NEW)
 
-Initializes the pacman keyring at boot. Without this, `pacstrap` will fail with GPG signature verification errors:
+Initializes the pacman keyring at boot. Without this, `pacstrap` will fail with GPG signature verification errors.
+
+**IMPORTANT:** This must match the releng profile exactly. The live ISO mounts `/etc/pacman.d/gnupg` as a tmpfs, and the service has critical mount dependencies and time-sync requirements for signature validation.
 
 ```ini
 [Unit]
 Description=Initializes Pacman Keyring
-Before=sshd.service
-ConditionDirectoryNotEmpty=!/etc/pacman.d/gnupg
+Requires=etc-pacman.d-gnupg.mount
+BindsTo=etc-pacman.d-gnupg.mount
+After=etc-pacman.d-gnupg.mount time-sync.target
+Before=archlinux-keyring-wkd-sync.service
 
 [Service]
 Type=oneshot
@@ -340,6 +354,8 @@ ExecStart=/usr/bin/pacman-key --populate
 [Install]
 WantedBy=multi-user.target
 ```
+
+**NOTE:** Do NOT use `ConditionDirectoryNotEmpty=!/etc/pacman.d/gnupg` — the releng profile doesn't use that condition because the gnupg directory is a tmpfs mount that starts empty each boot.
 
 Also need a systemd preset file to enable this and NetworkManager:
 

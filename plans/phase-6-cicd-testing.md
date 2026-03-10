@@ -341,7 +341,7 @@ hyprflux-iso/
 ```
 
 **Total new files:** ~25 files
-**Total new code:** ~1200 lines (installer ~500, TUI lib ~200, chroot wrapper ~350, build/config ~150)
+**Total new code:** ~1400 lines (installer ~500, TUI lib ~200, chroot wrapper ~450, build/config ~150, shims ~100)
 **Existing code change:** ~6 lines in HyprFlux `install.sh` (optional, for future standalone ISO mode)
 
 ---
@@ -354,9 +354,9 @@ hyprflux-iso/
 | Phase 2 | 20-30 min | Boot configs (UEFI + BIOS) |
 | Phase 3 | 1-2 hours | TUI framework + branding |
 | Phase 4 | 2-4 hours | Installer logic (the big one) |
-| Phase 5 | 3-5 hours | HyprFlux chroot wrapper integration |
+| Phase 5 | 4-6 hours | HyprFlux chroot wrapper integration |
 | Phase 6 | 1 hour | CI/CD workflow update |
-| **Total** | **~8-13 hours** | Full implementation |
+| **Total** | **~9-15 hours** | Full implementation |
 
 ---
 

@@ -21,10 +21,11 @@ The original plan was to run `HyprFlux/install.sh` -> `Arch-Hyprland/install.sh`
 | `lspci` for NVIDIA detection | Arch-Hyprland `install.sh:219` | No PCI bus access in chroot |
 | `gsettings` / dbus | HyprFlux module `08-gtk.sh` | No dbus session bus in chroot |
 | `script -qfc` | `lib/packages.sh:53` | Requires `/dev/pts` pseudo-terminal |
-| `chsh` | Arch-Hyprland `zsh.sh` | Requires PAM authentication |
-| `ask_yes_no()` interactive | HyprFlux module `17-optional-packages.sh` | Hangs waiting for TTY input |
-| `setup_sudo()` keep-alive | `lib/common.sh` | Background `while true` loop in chroot |
+| `chsh` retry loop | Arch-Hyprland `zsh.sh:89` | Requires PAM authentication; loops forever on failure |
+| `ask_yes_no()` interactive | HyprFlux module `17-optional-packages.sh` | Hangs waiting for TTY input (but empty stdin = auto-skip) |
+| `setup_sudo()` keep-alive | `lib/common.sh` | Background `while true` loop in chroot (harmless with NOPASSWD) |
 | curl/git downloads | Various scripts | Needs DNS/network properly configured in chroot |
+| `nwg-look` display ops | HyprFlux module `08-gtk.sh` | No display server in chroot |
 
 **Solution:** Create a custom **chroot wrapper script** (`hyprflux-chroot-wrapper.sh`) that replaces the Arch-Hyprland whiptail flow entirely. It runs individual install scripts in the correct order with chroot-safe adaptations.
 
@@ -43,7 +44,9 @@ ISO Installer (Phase 4)
         └─ arch-chroot → hyprflux-chroot-wrapper.sh
               │
               ├─ Install sudo shim (wraps sudo to just run commands)
-              ├─ Install systemctl shim (converts --now to enable-only)
+              ├─ Install systemctl shim (strips --now, skips runtime verbs)
+              ├─ Install chsh shim (no-op, shell set via usermod)
+              ├─ Install gsettings/nwg-look shims (no dbus in chroot)
               │
               ├─ Phase A: Arch-Hyprland scripts (in order)
               │   ├─ 00-base.sh
@@ -56,8 +59,11 @@ ISO Installer (Phase 4)
               │   ├─ bluetooth.sh (with systemctl shim)
               │   ├─ sddm.sh (with systemctl shim)
               │   ├─ nvidia.sh (if HAS_NVIDIA=yes)
-              │   ├─ zsh.sh (patched chsh)
-              │   └─ dotfiles-main.sh (Hyprland-Dots)
+              │   ├─ zsh.sh (with chsh shim)
+              │   ├─ thunar.sh (file manager)
+              │   ├─ xdph.sh (xdg-desktop-portal-hyprland)
+              │   ├─ sddm_theme.sh (SDDM theming)
+              │   └─ dotfiles-main.sh (clones JaKooLit/Hyprland-Dots)
               │
               ├─ Phase B: HyprFlux dotsSetup modules (01-17)
               │   ├─ modules 01-07: run as-is
@@ -80,7 +86,7 @@ ISO Installer (Phase 4)
 
 | # | File | Lines | Description |
 |---|------|-------|-------------|
-| 1 | `airootfs/root/lib/hyprflux-chroot-wrapper.sh` | ~350 | Master chroot wrapper script |
+| 1 | `airootfs/root/lib/hyprflux-chroot-wrapper.sh` | ~450 | Master chroot wrapper script |
 | 2 | Step 10 in `hyprflux-install.sh` | ~80 | Pre-chroot setup + invoke wrapper |
 | 3 | Step 11 in `hyprflux-install.sh` | ~40 | Cleanup + reboot |
 
@@ -160,10 +166,13 @@ $2 = HAS_NVIDIA ("yes" or "no")
 ### Design Principles
 
 1. **No whiptail** — all components are pre-selected (the ISO installer already collected user preferences)
-2. **systemctl shim** — intercepts `systemctl enable --now` and converts to `systemctl enable` only
-3. **sudo shim** — when running as target user, sudo is pre-configured to not require password
-4. **Skip dbus-dependent operations** — gsettings/nwg-look deferred to first-boot service
-5. **Non-interactive** — all `read` prompts and `ask_yes_no` calls are bypassed
+2. **systemctl shim** — strips `--now` flag, skips runtime verbs (start/stop/restart/is-active/status), attempts `--user enable` (may fail silently)
+3. **chsh shim** — returns success immediately (shell already set via `usermod`)
+4. **gsettings/nwg-look shims** — script files in `/usr/local/bin/` (not function exports, which don't survive `su -`)
+5. **sudo shim** — when running as target user, sudo is pre-configured to not require password
+6. **Skip dbus-dependent operations** — gsettings/nwg-look deferred to first-boot service
+7. **Non-interactive** — all `read` prompts and `ask_yes_no` calls are bypassed (empty stdin = "no")
+8. **Config variables** — all dotsSetup.sh config variables are written to a shared env file sourced by each module
 
 ### Implementation Outline
 
@@ -188,28 +197,37 @@ echo "    NVIDIA: ${HAS_NVIDIA}"
 
 # --- systemctl shim ---
 # Replaces systemctl so that:
-#   "enable --now" becomes "enable" (no running systemd in chroot)
-#   "start", "stop", "restart", "is-active" are silently skipped
+#   "enable --now" becomes "enable" (strips --now, no running systemd in chroot)
+#   "start", "stop", "restart", "is-active", "status" are silently skipped
+#   "--user" + runtime verbs are skipped (no user dbus session)
+#   "--user enable" is ATTEMPTED (creates symlink, may fail silently)
 #   "enable" (without --now) works normally
 cat > /usr/local/bin/systemctl-shim << 'SHIM_EOF'
 #!/bin/bash
 # systemctl shim for chroot environment
+#
+# Logic:
+#   1. Runtime verbs (start/stop/restart/is-active/status) → always skip
+#   2. --now flag → strip it (convert "enable --now" to "enable")
+#   3. --user + runtime verb → skip
+#   4. --user + enable → attempt (may fail, that's ok — first-boot handles it)
+#   5. Everything else → pass through to real systemctl
 args=("$@")
 filtered=()
-skip_cmd=false
+has_runtime_verb=false
+has_user=false
 
 for arg in "${args[@]}"; do
     case "$arg" in
         start|stop|restart|is-active|status)
-            skip_cmd=true
+            has_runtime_verb=true
             filtered+=("$arg")
             ;;
         --now)
-            # Strip --now flag, keep the rest
+            # Strip --now flag entirely
             ;;
         --user)
-            # User services can't be enabled in chroot either
-            skip_cmd=true
+            has_user=true
             filtered+=("$arg")
             ;;
         *)
@@ -218,12 +236,21 @@ for arg in "${args[@]}"; do
     esac
 done
 
-if [[ "$skip_cmd" == true ]]; then
-    echo "[chroot-shim] Skipping: systemctl ${args[*]}" >&2
+# Skip runtime commands entirely (with or without --user)
+if [[ "$has_runtime_verb" == true ]]; then
+    echo "[chroot-shim] Skipping runtime: systemctl ${args[*]}" >&2
     exit 0
 fi
 
-# For "enable" commands, use the real systemctl
+# For --user enable: attempt it but don't fail hard
+# (user systemd instance isn't running, but the symlink creation might work)
+if [[ "$has_user" == true ]]; then
+    echo "[chroot-shim] Attempting --user enable (may fail): systemctl ${filtered[*]}" >&2
+    /usr/bin/systemctl "${filtered[@]}" 2>/dev/null || true
+    exit 0
+fi
+
+# For system-level "enable" commands, use the real systemctl
 /usr/bin/systemctl "${filtered[@]}"
 SHIM_EOF
 chmod +x /usr/local/bin/systemctl-shim
@@ -246,11 +273,20 @@ chmod 440 /etc/sudoers.d/hyprflux-temp
 ARCH_HYPR_DIR="${TARGET_HOME}/Arch-Hyprland"
 INSTALL_SCRIPTS="${ARCH_HYPR_DIR}/install-scripts"
 
-# Source Arch-Hyprland's global functions
-# (provides install_package_pacman, install_package, show_progress, etc.)
-export ISAUR="yay"  # Set AUR helper preference
+# NOTE: We do NOT export ISAUR="yay" here. Each Arch-Hyprland script
+# independently sources Global_functions.sh, which auto-detects yay if
+# installed (line 73). Since yay.sh runs before any script that needs
+# the AUR helper, auto-detection works correctly. Also, `export` wouldn't
+# survive the `su -` boundary anyway (su resets the environment).
 
 echo "==> Phase A: Arch-Hyprland components"
+
+# NOTE: Arch-Hyprland's install.sh (lines 346-353) downloads custom scripts
+# from ahmad9059/Scripts (replace_reads.sh, initial.sh, custom zsh.sh) and
+# runs them BEFORE the whiptail selection. Since our wrapper bypasses install.sh
+# entirely, these scripts are skipped. If they contain essential setup not
+# covered by HyprFlux modules, they would need to be added here.
+# TODO: Verify whether these custom scripts are needed or redundant.
 
 # A1: Base packages (base-devel, keyring refresh)
 echo "==> [A1] Installing base packages..."
@@ -295,18 +331,40 @@ if [[ "${HAS_NVIDIA}" == "yes" ]]; then
 fi
 
 # A11: Zsh
-# Patch chsh to use usermod instead (avoids PAM issues in chroot)
+# Pre-set the shell to zsh via usermod (avoids PAM issues with chsh in chroot)
+# Then stub out chsh so zsh.sh's retry loop (line 89: while ! chsh ...) exits immediately
 echo "==> [A11] Installing Zsh + Oh My Zsh..."
-# Pre-set the shell to zsh before running the script
 usermod -s /usr/bin/zsh "${TARGET_USER}"
+cat > /usr/local/bin/chsh << 'CHSH_SHIM'
+#!/bin/bash
+# chsh shim for chroot — shell already set via usermod
+echo "[chroot-shim] chsh stubbed (shell already set via usermod)" >&2
+exit 0
+CHSH_SHIM
+chmod +x /usr/local/bin/chsh
 su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/zsh.sh" || true
+rm -f /usr/local/bin/chsh  # Remove shim after zsh.sh completes
 
-# A12: Dotfiles (Hyprland-Dots)
-echo "==> [A12] Installing Hyprland dotfiles..."
+# A12: Thunar file manager
+echo "==> [A12] Installing Thunar file manager..."
+su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/thunar.sh" || true
+
+# A13: XDG Desktop Portal for Hyprland
+echo "==> [A13] Installing xdg-desktop-portal-hyprland..."
+su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/xdph.sh" || true
+
+# A14: SDDM Theme
+echo "==> [A14] Installing SDDM theme..."
+su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/sddm_theme.sh" || true
+
+# A15: Dotfiles (Hyprland-Dots)
+# NOTE: This clones a THIRD repo (JaKooLit/Hyprland-Dots) inside chroot.
+# Network access is required (DNS resolution already copied to chroot).
+echo "==> [A15] Installing Hyprland dotfiles..."
 su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/dotfiles-main.sh"
 
-# A13: Final check
-echo "==> [A13] Running final check..."
+# A16: Final check
+echo "==> [A16] Running final check..."
 su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/02-Final-Check.sh" || true
 
 # ================================================================
@@ -320,40 +378,98 @@ echo "==> Phase B: HyprFlux dotfiles modules"
 # Set environment variables that HyprFlux modules expect
 export HYPRFLUX_ISO_MODE=1
 
+# --- Install gsettings and nwg-look shims as SCRIPTS (not function exports) ---
+# export -f does NOT survive the su - boundary, so we create actual script files.
+# These are used by module 08-gtk.sh which guards gsettings calls with `command -v`.
+cat > /usr/local/bin/gsettings << 'GSETTINGS_SHIM'
+#!/bin/bash
+echo "[chroot-shim] gsettings stubbed (no dbus in chroot)" >&2
+exit 0
+GSETTINGS_SHIM
+chmod +x /usr/local/bin/gsettings
+
+cat > /usr/local/bin/nwg-look << 'NWGLOOK_SHIM'
+#!/bin/bash
+echo "[chroot-shim] nwg-look stubbed (no display in chroot)" >&2
+exit 0
+NWGLOOK_SHIM
+chmod +x /usr/local/bin/nwg-look
+
+# --- Set dotsSetup.sh config variables ---
+# dotsSetup.sh (lines 39-90) sets ~15 config variables that modules expect.
+# We replicate them here so modules have access when sourced.
+HYPRFLUX_DIR="${TARGET_HOME}/HyprFlux"
+HYPRFLUX_DOTS_DIR="${HYPRFLUX_DIR}/dots"
+SDDM_THEME="sugar-candy"
+GRUB_THEME_DIR="/usr/share/grub/themes/Vimix"
+PLYMOUTH_THEME_DIR="/usr/share/plymouth/themes"
+GTK_THEME="HyprFlux-Compact"
+ICON_THEME="Papirus-Dark"
+CURSOR_THEME="Bibata-Modern-Classic"
+CURSOR_SIZE=24
+FONT_NAME="Noto Sans"
+FONT_SIZE=11
+WAYBAR_STYLE="catppuccin-mocha"
+TERMINAL="kitty"
+BROWSER="firefox"
+
+# Export all config variables so they survive into su - subshells via env
+CONFIG_ENV_FILE="/tmp/hyprflux-module-env.sh"
+cat > "${CONFIG_ENV_FILE}" << MODULE_ENV_EOF
+export HYPRFLUX_ISO_MODE=1
+export HYPRFLUX_DIR="${HYPRFLUX_DIR}"
+export HYPRFLUX_DOTS_DIR="${HYPRFLUX_DOTS_DIR}"
+export SDDM_THEME="${SDDM_THEME}"
+export GRUB_THEME_DIR="${GRUB_THEME_DIR}"
+export PLYMOUTH_THEME_DIR="${PLYMOUTH_THEME_DIR}"
+export GTK_THEME="${GTK_THEME}"
+export ICON_THEME="${ICON_THEME}"
+export CURSOR_THEME="${CURSOR_THEME}"
+export CURSOR_SIZE=${CURSOR_SIZE}
+export FONT_NAME="${FONT_NAME}"
+export FONT_SIZE=${FONT_SIZE}
+export WAYBAR_STYLE="${WAYBAR_STYLE}"
+export TERMINAL="${TERMINAL}"
+export BROWSER="${BROWSER}"
+MODULE_ENV_EOF
+
 # Run modules in order, with special handling for problematic ones
+# NOTE: Each su - subshell sources common.sh which calls setup_sudo().
+# setup_sudo() spawns a background keep-alive loop, but since we have
+# NOPASSWD sudoers, sudo -v succeeds without prompting. The background
+# loops are cleaned up when each su - subshell exits (trap in common.sh).
 for module in "${HYPRFLUX_DIR}"/modules/[0-9]*.sh; do
     module_name=$(basename "$module")
     echo "==> [Module] ${module_name}..."
     
     case "$module_name" in
         08-gtk.sh)
-            # Skip gsettings/nwg-look (requires dbus session)
-            # GTK theme will be applied on first boot
+            # gsettings/nwg-look are shimmed as scripts in /usr/local/bin
+            # (see above). The module will find them via `command -v` but
+            # they'll just log and exit 0. Real GTK config is deferred to first-boot.
             echo "    [DEFERRED] gsettings requires dbus — will apply on first login"
-            # Still source the module but override the problematic functions
             su - "${TARGET_USER}" -c "
-                export HYPRFLUX_ISO_MODE=1
+                source ${CONFIG_ENV_FILE}
                 cd ${HYPRFLUX_DIR}
-                # Source libs but skip gsettings calls
                 source lib/common.sh 2>/dev/null || true
                 source lib/packages.sh 2>/dev/null || true
                 source lib/git.sh 2>/dev/null || true
-                # Run the module with gsettings stubbed out
-                gsettings() { echo '[stub] gsettings skipped in chroot'; }
-                nwg-look() { echo '[stub] nwg-look skipped in chroot'; }
-                export -f gsettings nwg-look
                 source ${module}
             " || true
             ;;
         17-optional-packages.sh)
-            # Skip — interactive (ask_yes_no) and optional
+            # Skip — interactive (ask_yes_no) and optional.
+            # NOTE: This skip is technically redundant because when stdin is
+            # empty/closed, ask_yes_no's read -rp returns empty string which
+            # is treated as "no" (line 106 of common.sh), so the module would
+            # silently skip both prompts. Kept explicit for clarity.
             echo "    [SKIPPED] Optional packages (interactive prompts not available)"
             ;;
         10-plymouth.sh)
             # Plymouth needs mkinitcpio/grub — should work but may need care
             echo "    [Module] Running plymouth setup..."
             su - "${TARGET_USER}" -c "
-                export HYPRFLUX_ISO_MODE=1
+                source ${CONFIG_ENV_FILE}
                 cd ${HYPRFLUX_DIR}
                 source lib/common.sh 2>/dev/null || true
                 source lib/packages.sh 2>/dev/null || true
@@ -366,7 +482,7 @@ for module in "${HYPRFLUX_DIR}"/modules/[0-9]*.sh; do
         *)
             # Normal module execution
             su - "${TARGET_USER}" -c "
-                export HYPRFLUX_ISO_MODE=1
+                source ${CONFIG_ENV_FILE}
                 cd ${HYPRFLUX_DIR}
                 source lib/common.sh 2>/dev/null || true
                 source lib/packages.sh 2>/dev/null || true
@@ -466,6 +582,11 @@ echo "==> Cleanup"
 # Remove temporary sudoers entry
 rm -f /etc/sudoers.d/hyprflux-temp
 
+# Remove shim scripts
+rm -f /usr/local/bin/gsettings
+rm -f /usr/local/bin/nwg-look
+rm -f /tmp/hyprflux-module-env.sh
+
 # Ensure wheel group sudo is properly configured (set in Phase 4)
 # Already done: sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
@@ -523,6 +644,7 @@ By the end of Phase 5, the target system has:
 
 ### Desktop Environment
 - Hyprland compositor + hypridle + hyprlock
+- xdg-desktop-portal-hyprland (screen sharing, file picker)
 - Waybar (status bar) with custom themes
 - Rofi (app launcher)
 - SDDM (display manager) with custom theme
@@ -617,10 +739,16 @@ This is a ~6 line change. **However, with the chroot wrapper approach, we don't 
 |-------|------|------------|
 | Individual Arch-Hyprland script fails | Medium | `|| true` on non-critical scripts; continue with rest |
 | yay compilation fails in chroot | Low | `/dev/pts` is bind-mounted by arch-chroot; `script -qfc` should work |
-| Zsh `chsh` fails | Medium | Pre-set shell via `usermod` before running zsh.sh |
+| Zsh `chsh` hangs in chroot | **Eliminated** | chsh shimmed as no-op script; shell pre-set via `usermod` |
 | Network drops during AUR builds | Medium | Non-fatal; user can re-run yay after reboot |
 | Oh My Zsh curl install hangs | Low | Timeout via `--max-time` in curl calls |
-| Arch-Hyprland script sources Global_functions.sh | Medium | Wrapper sets `ISAUR=yay` and ensures the file is sourceable |
+| ISAUR not set for Arch-Hyprland scripts | **Eliminated** | Each script sources Global_functions.sh which auto-detects yay |
+| `export -f` won't survive `su -` | **Eliminated** | Using script shims in `/usr/local/bin/` instead of function exports |
+| systemctl `--user enable` fails in chroot | Low | Shim attempts it (may fail silently); first-boot service handles pipewire |
+| setup_sudo() background loops accumulate | Low | NOPASSWD sudoers means `sudo -v` succeeds immediately; loops exit with subshell |
+| HyprFlux modules missing config variables | **Eliminated** | All dotsSetup.sh config vars written to shared env file, sourced per module |
+| dotfiles-main.sh clones 3rd repo | Low | DNS resolution copied to chroot; network available |
+| Custom ahmad9059/Scripts not run | Medium | TODO: verify if essential or covered by HyprFlux modules |
 | First-boot service fails | Low | One-shot; user can re-run manually if needed |
 | Module order dependencies | Medium | Wrapper follows exact order from dotsSetup.sh |
 
@@ -647,7 +775,7 @@ This is a ~6 line change. **However, with the chroot wrapper approach, we don't 
 
 ## Estimated Implementation Time
 
-~3-5 hours. The chroot wrapper is complex and requires careful testing of each script's behavior inside chroot.
+~4-6 hours. The chroot wrapper is complex and requires careful testing of each script's behavior inside chroot. The additional shims (chsh, gsettings, nwg-look), config variable replication, and expanded script list add complexity.
 
 ---
 

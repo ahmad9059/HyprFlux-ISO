@@ -82,13 +82,13 @@ Primary systemd-boot entry for the HyprFlux live environment.
 title   HyprFlux Installer
 linux   /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux
 initrd  /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
-options archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=n
+options archisobasedir=%INSTALL_DIR% archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=n
 ```
 
 **Key changes from original plan:**
 - Uses `archisosearchuuid=%ARCHISO_UUID%` instead of deprecated `archisolabel=`
 - Uses `%INSTALL_DIR%` and `%ARCH%` template variables instead of hardcoded paths
-- No `archisobasedir=` needed when using UUID-based detection
+- Includes `archisobasedir=%INSTALL_DIR%` — **mandatory** because our `install_dir` is `hyprflux` (not the default `arch`); without this the archiso initcpio hook won't find the squashfs
 
 ---
 
@@ -100,7 +100,7 @@ Copy-to-RAM variant (loads entire squashfs into RAM -- faster but needs 2GB+ RAM
 title   HyprFlux Installer (Copy to RAM)
 linux   /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux
 initrd  /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
-options archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=y
+options archisobasedir=%INSTALL_DIR% archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=y
 ```
 
 ---
@@ -111,6 +111,8 @@ GRUB configuration as fallback for UEFI systems. Some UEFI firmware may load GRU
 
 ```bash
 # grub.cfg -- HyprFlux Live ISO (GRUB/UEFI fallback)
+# NOTE: No "search" command needed — the archiso initcpio hook discovers
+# the boot media via the archisosearchuuid kernel parameter.
 
 set timeout=15
 set default=0
@@ -122,8 +124,8 @@ set gfxpayload=keep
 
 menuentry "HyprFlux Installer" --class arch --class linux {
     set gfxpayload=keep
-    search --no-floppy --set=root --fs-uuid %ARCHISO_UUID%
     linux /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux \
+        archisobasedir=%INSTALL_DIR% \
         archisosearchuuid=%ARCHISO_UUID% \
         cow_spacesize=2G \
         copytoram=n
@@ -132,8 +134,8 @@ menuentry "HyprFlux Installer" --class arch --class linux {
 
 menuentry "HyprFlux Installer (Copy to RAM)" --class arch --class linux {
     set gfxpayload=keep
-    search --no-floppy --set=root --fs-uuid %ARCHISO_UUID%
     linux /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux \
+        archisobasedir=%INSTALL_DIR% \
         archisosearchuuid=%ARCHISO_UUID% \
         cow_spacesize=2G \
         copytoram=y
@@ -152,10 +154,9 @@ menuentry "System restart" --class restart {
 ```
 
 **Key changes from original plan:**
-- Uses `search --fs-uuid %ARCHISO_UUID%` for reliable root device discovery
-- Uses `archisosearchuuid=%ARCHISO_UUID%` instead of deprecated `archisolabel=`
+- **Removed `search --no-floppy --set=root --fs-uuid %ARCHISO_UUID%`** — GRUB's `search --fs-uuid` expects a real filesystem UUID, but `%ARCHISO_UUID%` is an ISO timestamp (e.g., `2024-01-15-12-30-00-00`). The releng grub.cfg does NOT use a `search` command; the archiso initcpio hook handles media discovery via the `archisosearchuuid` kernel parameter.
+- Added `archisobasedir=%INSTALL_DIR%` — mandatory since `install_dir` is `hyprflux` (not default `arch`)
 - Uses template variables for all paths
-- No custom `set archiso_label=` variable needed
 
 ---
 
@@ -211,13 +212,13 @@ LABEL hyprflux
     MENU DEFAULT
     LINUX /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux
     INITRD /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
-    APPEND archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=n
+    APPEND archisobasedir=%INSTALL_DIR% archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=n
 
 LABEL hyprflux-ram
     MENU LABEL HyprFlux Installer (Copy to RAM)
     LINUX /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux
     INITRD /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
-    APPEND archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=y
+    APPEND archisobasedir=%INSTALL_DIR% archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=y
 ```
 
 #### `syslinux/archiso_tail.cfg` (footer entries)
@@ -235,6 +236,7 @@ LABEL poweroff
 **Changes from original plan:**
 - Modular structure matching releng (instead of single flat file)
 - Uses `archisosearchuuid=%ARCHISO_UUID%` instead of deprecated `archisolabel=`
+- Added `archisobasedir=%INSTALL_DIR%` — mandatory for custom install_dir
 - Uses template variables for paths
 - Added `SERIAL` line for serial console support
 
