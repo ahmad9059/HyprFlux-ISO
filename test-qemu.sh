@@ -128,11 +128,10 @@ QEMU_CMD+=(
     -drive file=/tmp/hyprflux-test-disk.qcow2,if=virtio,format=qcow2
 )
 
-# Create the test disk if it doesn't exist
-if [[ ! -f /tmp/hyprflux-test-disk.qcow2 ]]; then
-    echo "Creating 30G test disk..."
-    qemu-img create -f qcow2 /tmp/hyprflux-test-disk.qcow2 30G
-fi
+# Always recreate the test disk for a fresh install
+echo "Creating fresh 30G test disk..."
+rm -f /tmp/hyprflux-test-disk.qcow2
+qemu-img create -f qcow2 /tmp/hyprflux-test-disk.qcow2 30G
 
 echo "Launching QEMU..."
 exec "${QEMU_CMD[@]}"

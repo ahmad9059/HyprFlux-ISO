@@ -615,9 +615,9 @@ step_disk() {
 step_base_install() {
     set_status "Installing Base System..."
 
-    # Optimize mirrors
-    log_step "Updating mirror list with reflector..."
-    reflector --latest 20 --protocol https --sort rate \
+    # Optimize mirrors - get fastest mirrors for better download speeds
+    log_step "Finding fastest mirrors with reflector..."
+    reflector --latest 10 --protocol https --sort rate --download-timeout 5 \
         --save /etc/pacman.d/mirrorlist 2>&1 | while IFS= read -r line; do
         log_cmd "$line"
     done || log_warn "Reflector failed, using existing mirrors"
@@ -639,17 +639,59 @@ step_base_install() {
         amd-ucode intel-ucode
     )
 
-    log_step "Running pacstrap (this may take 5-15 minutes)..."
+    # Retry logic for pacstrap
+    local max_retries=3
+    local retry_count=0
+    local pacstrap_success=false
 
-    # Temporarily disable errexit for pacstrap pipeline
-    set +e
-    pacstrap -K "$MOUNT_POINT" "${base_pkgs[@]}" 2>&1 | while IFS= read -r line; do
-        log_cmd "$line"
+    while [[ $retry_count -lt $max_retries ]]; do
+        retry_count=$((retry_count + 1))
+        
+        if [[ $retry_count -gt 1 ]]; then
+            log_warn "Retrying pacstrap (attempt ${retry_count}/${max_retries})..."
+            # Refresh mirrors on retry
+            log_step "Refreshing mirror list..."
+            reflector --latest 5 --protocol https --sort rate --download-timeout 5 \
+                --save /etc/pacman.d/mirrorlist 2>&1 | while IFS= read -r line; do
+                log_cmd "$line"
+            done || true
+            cp /etc/pacman.d/mirrorlist "${MOUNT_POINT}/etc/pacman.d/mirrorlist"
+            sleep 2
+        fi
+
+        log_step "Running pacstrap (attempt ${retry_count}/${max_retries})..."
+        log_info "This may take 5-15 minutes depending on your internet speed..."
+
+        # Temporarily disable errexit for pacstrap pipeline
+        set +e
+        pacstrap -K "$MOUNT_POINT" "${base_pkgs[@]}" 2>&1 | while IFS= read -r line; do
+            log_cmd "$line"
+        done
+        local pacstrap_status=${PIPESTATUS[0]}
+        set -e
+
+        if [[ $pacstrap_status -eq 0 ]]; then
+            pacstrap_success=true
+            break
+        fi
+
+        log_error "pacstrap failed (attempt ${retry_count}/${max_retries})"
+        
+        if [[ $retry_count -lt $max_retries ]]; then
+            log_info "Waiting 5 seconds before retry..."
+            sleep 5
+        fi
     done
-    local pacstrap_status=${PIPESTATUS[0]}
-    set -e
 
-    if [[ $pacstrap_status -ne 0 ]]; then
+    if [[ "$pacstrap_success" != true ]]; then
+        echo ""
+        log_error "pacstrap failed after ${max_retries} attempts!"
+        echo ""
+        echo -e "  ${YELLOW}Possible solutions:${RESET}"
+        echo "    1. Check your internet connection"
+        echo "    2. Try again later (mirrors may be overloaded)"
+        echo "    3. Run manually: pacstrap -K $MOUNT_POINT base linux linux-firmware"
+        echo ""
         die "pacstrap failed! Check your internet connection and try again."
     fi
 
@@ -667,90 +709,63 @@ step_base_install() {
 step_configure_system() {
     set_status "Configuring System..."
 
-    # Ensure /tmp exists in target
-    mkdir -p "${MOUNT_POINT}/tmp"
+    log_step "Configuring timezone..."
+    arch-chroot "$MOUNT_POINT" ln -sf "/usr/share/zoneinfo/${INSTALL_TIMEZONE}" /etc/localtime
+    arch-chroot "$MOUNT_POINT" hwclock --systohc
+    log_ok "Timezone set to ${INSTALL_TIMEZONE}"
 
-    # Write configuration script to run inside chroot
-    cat > "${MOUNT_POINT}/tmp/hyprflux-configure.sh" << CHROOT_EOF
-#!/bin/bash
-set -e
+    log_step "Configuring locale..."
+    arch-chroot "$MOUNT_POINT" sed -i "s/^#${INSTALL_LOCALE}/${INSTALL_LOCALE}/" /etc/locale.gen
+    arch-chroot "$MOUNT_POINT" locale-gen
+    echo "LANG=${INSTALL_LOCALE}" > "${MOUNT_POINT}/etc/locale.conf"
+    log_ok "Locale set to ${INSTALL_LOCALE}"
 
-echo "==> Setting timezone..."
-ln -sf /usr/share/zoneinfo/${INSTALL_TIMEZONE} /etc/localtime
-hwclock --systohc
+    log_step "Configuring keyboard..."
+    echo "KEYMAP=${INSTALL_KEYMAP}" > "${MOUNT_POINT}/etc/vconsole.conf"
+    log_ok "Keyboard set to ${INSTALL_KEYMAP}"
 
-echo "==> Generating locales..."
-sed -i "s/^#${INSTALL_LOCALE}/${INSTALL_LOCALE}/" /etc/locale.gen
-locale-gen
-echo "LANG=${INSTALL_LOCALE}" > /etc/locale.conf
+    log_step "Configuring hostname..."
+    echo "${INSTALL_HOSTNAME}" > "${MOUNT_POINT}/etc/hostname"
+    cat > "${MOUNT_POINT}/etc/hosts" << EOF
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   ${INSTALL_HOSTNAME}.localdomain ${INSTALL_HOSTNAME}
+EOF
+    log_ok "Hostname set to ${INSTALL_HOSTNAME}"
 
-echo "==> Setting keyboard layout..."
-echo "KEYMAP=${INSTALL_KEYMAP}" > /etc/vconsole.conf
+    log_step "Setting root password..."
+    echo "root:${INSTALL_PASSWORD}" | arch-chroot "$MOUNT_POINT" chpasswd
+    log_ok "Root password set"
 
-echo "==> Setting hostname..."
-echo "${INSTALL_HOSTNAME}" > /etc/hostname
-echo "127.0.0.1   localhost" > /etc/hosts
-echo "::1         localhost" >> /etc/hosts
-echo "127.0.1.1   ${INSTALL_HOSTNAME}.localdomain ${INSTALL_HOSTNAME}" >> /etc/hosts
+    log_step "Creating user '${INSTALL_USERNAME}'..."
+    arch-chroot "$MOUNT_POINT" useradd -m -G wheel -s /bin/bash "${INSTALL_USERNAME}"
+    echo "${INSTALL_USERNAME}:${INSTALL_PASSWORD}" | arch-chroot "$MOUNT_POINT" chpasswd
+    log_ok "User ${INSTALL_USERNAME} created"
 
-echo "==> Setting root password..."
-echo "root:${INSTALL_PASSWORD}" | chpasswd
+    log_step "Configuring sudo..."
+    arch-chroot "$MOUNT_POINT" sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+    log_ok "Sudo configured"
 
-echo "==> Creating user '${INSTALL_USERNAME}'..."
-useradd -m -G wheel -s /bin/bash "${INSTALL_USERNAME}"
-echo "${INSTALL_USERNAME}:${INSTALL_PASSWORD}" | chpasswd
+    log_step "Configuring pacman..."
+    arch-chroot "$MOUNT_POINT" sed -i 's/^#Color/Color/' /etc/pacman.conf
+    arch-chroot "$MOUNT_POINT" sed -i 's/^#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf
+    arch-chroot "$MOUNT_POINT" sed -i 's/^#VerbosePkgLists/VerbosePkgLists/' /etc/pacman.conf
+    # Enable multilib
+    arch-chroot "$MOUNT_POINT" sed -i '/\[multilib\]/,/Include/{s/^#//}' /etc/pacman.conf
+    log_ok "Pacman configured"
 
-echo "==> Configuring sudo..."
-sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
-
-echo "==> Configuring pacman..."
-sed -i 's/^#Color/Color/' /etc/pacman.conf
-sed -i 's/^#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf
-sed -i 's/^#VerbosePkgLists/VerbosePkgLists/' /etc/pacman.conf
-# Enable multilib
-sed -i '/\[multilib\]/,/Include/{s/^#//}' /etc/pacman.conf
-
-echo "==> Installing GRUB bootloader..."
-if [[ "${INSTALL_BOOT_MODE}" == "uefi" ]]; then
-    grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
-else
-    grub-install --target=i386-pc "${INSTALL_DISK}"
-fi
-grub-mkconfig -o /boot/grub/grub.cfg
-
-echo "==> Enabling essential services..."
-systemctl enable NetworkManager
-
-echo "==> Base system configuration complete."
-CHROOT_EOF
-
-    chmod +x "${MOUNT_POINT}/tmp/hyprflux-configure.sh"
-
-    # Debug: verify script was created
-    if [[ -f "${MOUNT_POINT}/tmp/hyprflux-configure.sh" ]]; then
-        log_ok "Chroot script created: ${MOUNT_POINT}/tmp/hyprflux-configure.sh"
-        log_info "Script size: $(wc -c < "${MOUNT_POINT}/tmp/hyprflux-configure.sh") bytes"
+    log_step "Installing GRUB bootloader..."
+    if [[ "${INSTALL_BOOT_MODE}" == "uefi" ]]; then
+        arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
     else
-        die "Failed to create chroot configuration script!"
+        arch-chroot "$MOUNT_POINT" grub-install --target=i386-pc "${INSTALL_DISK}"
     fi
+    arch-chroot "$MOUNT_POINT" grub-mkconfig -o /boot/grub/grub.cfg
+    log_ok "GRUB installed"
 
-    log_step "Running system configuration in chroot..."
-
-    # Run chroot script
-    set +e
-    arch-chroot "$MOUNT_POINT" /bin/bash /tmp/hyprflux-configure.sh 2>&1 | \
-        while IFS= read -r line; do
-            log_cmd "$line"
-        done
-    local chroot_status=${PIPESTATUS[0]}
-    set -e
-
-    if [[ $chroot_status -ne 0 ]]; then
-        die "System configuration failed in chroot!"
-    fi
-
-    # Clean up
-    rm -f "${MOUNT_POINT}/tmp/hyprflux-configure.sh"
+    log_step "Enabling essential services..."
+    arch-chroot "$MOUNT_POINT" systemctl enable NetworkManager
+    log_ok "Services enabled"
 
     log_ok "System configured."
 }
