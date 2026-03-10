@@ -83,9 +83,10 @@ if [[ -n "$ISO_FILE" ]]; then
     # Offer to clean work directory (saves ~5-10GB disk space)
     read -rp "Clean work directory to free disk space? [Y/n]: " clean_ans
     if [[ "${clean_ans,,}" != "n" ]]; then
+        saved_size=$(du -sh "${WORK_DIR}" 2>/dev/null | cut -f1 || echo "several GB")
         echo "==> Cleaning work directory..."
         rm -rf "${WORK_DIR}"
-        echo "    Done. Saved $(du -sh "${WORK_DIR}" 2>/dev/null | cut -f1 || echo 'several GB') of disk space."
+        echo "    Done. Freed ${saved_size} of disk space."
     fi
 else
     echo ""

@@ -18,4 +18,16 @@ airootfs/usr/share/icons/hicolor/
 
 # OpenCode / agent config
 .agents/
+.opencode/
 skills-lock.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# QEMU test artifacts
+/tmp/hyprflux-*.qcow2
+/tmp/hyprflux-*.fd

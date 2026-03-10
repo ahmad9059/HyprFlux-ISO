@@ -31,7 +31,7 @@ curl
 wget
 
 # TUI
-dialog
+fzf
 
 # Utilities
 vim

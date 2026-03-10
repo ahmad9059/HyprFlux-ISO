@@ -3,17 +3,18 @@
 # This file is sourced by zsh on login. When root auto-logs in on tty1
 # (via the getty autologin drop-in), this launches the TUI installer.
 #
-# Phase 1: Placeholder -- just prints a message.
-# Phase 3+ will replace this with the actual installer launch.
+# Only tty1 gets the installer. Other TTYs (Ctrl+Alt+F2, etc.) get a
+# plain shell for debugging.
 
 if [[ "$(tty)" == "/dev/tty1" ]]; then
+    # Brief pause for terminal to fully initialize
+    sleep 1
+
+    # Launch installer -- if it exits (Ctrl+C or error), user gets a shell
+    bash ~/hyprflux-install.sh || true
+
     echo ""
-    echo "  HyprFlux Live Environment"
-    echo "  ========================="
-    echo ""
-    echo "  The installer will launch here in a future phase."
-    echo "  For now, you have a working live Arch Linux shell."
-    echo ""
-    echo "  Network: nmtui  |  Disks: lsblk  |  Shell: zsh"
+    echo "  Installer exited. You are now in a root shell."
+    echo "  To re-run: bash ~/hyprflux-install.sh"
     echo ""
 fi
