@@ -2,7 +2,7 @@
 
 ## Goal
 
-Create the boot loader configuration files that allow the HyprFlux ISO to boot on both **UEFI** and **Legacy BIOS** machines. This includes GRUB configs for UEFI, syslinux configs for BIOS, and the systemd-boot loader entries.
+Create the boot loader configuration files that allow the HyprFlux ISO to boot on both **UEFI** and **Legacy BIOS** machines. This includes systemd-boot entries for UEFI and syslinux configs for BIOS.
 
 After this phase, the ISO should boot cleanly on both UEFI and Legacy BIOS hardware/VMs.
 
@@ -13,14 +13,29 @@ After this phase, the ISO should boot cleanly on both UEFI and Legacy BIOS hardw
 ```
 ISO Boot Process:
 ├── UEFI Machine
-│   ├── systemd-boot (loader/entries/) → kernel + initramfs
-│   └── GRUB fallback (grub/grub.cfg) → kernel + initramfs
+│   └── systemd-boot (efiboot/loader/) → kernel + initramfs
 │
 └── Legacy BIOS Machine
-    └── syslinux (syslinux/syslinux.cfg) → kernel + initramfs
+    └── syslinux (syslinux/) → kernel + initramfs
 ```
 
 Both paths ultimately load the same kernel (`vmlinuz-linux`) and initramfs (`initramfs-linux.img`) with the same boot parameters. The difference is just the bootloader firmware interface.
+
+**NOTE:** We use `systemd-boot` for UEFI (not GRUB). This matches the official archiso releng profile and is simpler. GRUB is only installed on the **target system** (Phase 4, Step 9), not used for ISO boot.
+
+---
+
+## Template Variables
+
+archiso's `mkarchiso` automatically replaces these template variables at build time in all boot config files:
+
+| Variable | Replaced With | Example |
+|----------|---------------|---------|
+| `%ARCHISO_UUID%` | ISO filesystem UUID | `2024-01-15-12-30-00-00` |
+| `%INSTALL_DIR%` | `install_dir` from profiledef.sh | `hyprflux` |
+| `%ARCH%` | Architecture | `x86_64` |
+
+**CRITICAL:** Do NOT use custom placeholders like `HYPRFLUX_REPLACE_LABEL`. Use the official `%VARIABLE%` syntax. No manual `sed` replacement is needed in `build.sh`.
 
 ---
 
@@ -28,56 +43,101 @@ Both paths ultimately load the same kernel (`vmlinuz-linux`) and initramfs (`ini
 
 | # | File | Lines | Description |
 |---|------|-------|-------------|
-| 1 | `grub/grub.cfg` | ~50 | GRUB config for UEFI ISO boot |
-| 2 | `efiboot/loader/loader.conf` | ~4 | systemd-boot configuration |
-| 3 | `efiboot/loader/entries/01-hyprflux.conf` | ~6 | systemd-boot entry for live env |
-| 4 | `syslinux/syslinux.cfg` | ~30 | Main syslinux config (BIOS boot) |
-| 5 | `syslinux/splash.png` | binary | Boot splash image (640x480, optional) |
+| 1 | `efiboot/loader/loader.conf` | ~4 | systemd-boot configuration |
+| 2 | `efiboot/loader/entries/01-hyprflux-x86_64-linux.conf` | ~6 | Default boot entry |
+| 3 | `efiboot/loader/entries/02-hyprflux-x86_64-linux-ram.conf` | ~6 | Copy-to-RAM boot entry |
+| 4 | `grub/grub.cfg` | ~45 | GRUB config (fallback for EFI systems without systemd-boot) |
+| 5 | `syslinux/syslinux.cfg` | ~10 | Main syslinux config (includes modular files) |
+| 6 | `syslinux/archiso_sys-linux.cfg` | ~20 | Linux boot entries for syslinux |
+| 7 | `syslinux/archiso_head.cfg` | ~25 | Syslinux header/styling |
+| 8 | `syslinux/archiso_tail.cfg` | ~10 | Syslinux footer (reboot/poweroff) |
+| 9 | `syslinux/archiso_sys.cfg` | ~5 | Syslinux system include file |
 
 ---
 
 ## Detailed Specifications
 
-### 1. `grub/grub.cfg` (~50 lines)
+### 1. `efiboot/loader/loader.conf` (~4 lines)
 
-GRUB configuration for the live ISO. Used when booting via UEFI.
+systemd-boot configuration for UEFI machines.
+
+```ini
+timeout 15
+default 01-hyprflux-*
+editor no
+```
+
+**Notes:**
+- `editor no` prevents users from editing kernel params at boot (security)
+- 15-second timeout before auto-selecting the default entry
+- Wildcard pattern matches the default entry
+
+---
+
+### 2. `efiboot/loader/entries/01-hyprflux-x86_64-linux.conf`
+
+Primary systemd-boot entry for the HyprFlux live environment.
+
+```ini
+title   HyprFlux Installer
+linux   /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux
+initrd  /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
+options archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=n
+```
+
+**Key changes from original plan:**
+- Uses `archisosearchuuid=%ARCHISO_UUID%` instead of deprecated `archisolabel=`
+- Uses `%INSTALL_DIR%` and `%ARCH%` template variables instead of hardcoded paths
+- No `archisobasedir=` needed when using UUID-based detection
+
+---
+
+### 3. `efiboot/loader/entries/02-hyprflux-x86_64-linux-ram.conf`
+
+Copy-to-RAM variant (loads entire squashfs into RAM -- faster but needs 2GB+ RAM).
+
+```ini
+title   HyprFlux Installer (Copy to RAM)
+linux   /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux
+initrd  /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
+options archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=y
+```
+
+---
+
+### 4. `grub/grub.cfg` (~45 lines)
+
+GRUB configuration as fallback for UEFI systems. Some UEFI firmware may load GRUB instead of systemd-boot.
 
 ```bash
-# grub.cfg -- HyprFlux Live ISO (GRUB/UEFI)
+# grub.cfg -- HyprFlux Live ISO (GRUB/UEFI fallback)
 
-# Visual
 set timeout=15
 set default=0
-set gfxmode=auto
+
 insmod all_video
 insmod gfxterm
 terminal_output gfxterm
-
-# Theme (optional, can be added later)
-# loadfont /boot/grub/fonts/unicode.pf2
-# set gfxpayload=keep
-
-# Archiso boot parameters
-set archiso_label="HYPRFLUX_REPLACE_LABEL"
+set gfxpayload=keep
 
 menuentry "HyprFlux Installer" --class arch --class linux {
     set gfxpayload=keep
-    linux /arch/boot/x86_64/vmlinuz-linux \
-        archisobasedir=arch \
-        archisolabel=${archiso_label} \
+    search --no-floppy --set=root --fs-uuid %ARCHISO_UUID%
+    linux /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux \
+        archisosearchuuid=%ARCHISO_UUID% \
         cow_spacesize=2G \
         copytoram=n
-    initrd /arch/boot/x86_64/initramfs-linux.img
+    initrd /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
 }
 
 menuentry "HyprFlux Installer (Copy to RAM)" --class arch --class linux {
     set gfxpayload=keep
-    linux /arch/boot/x86_64/vmlinuz-linux \
-        archisobasedir=arch \
-        archisolabel=${archiso_label} \
+    search --no-floppy --set=root --fs-uuid %ARCHISO_UUID%
+    linux /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux \
+        archisosearchuuid=%ARCHISO_UUID% \
         cow_spacesize=2G \
         copytoram=y
-    initrd /arch/boot/x86_64/initramfs-linux.img
+    initrd /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
 }
 
 menuentry "System shutdown" --class shutdown {
@@ -91,59 +151,39 @@ menuentry "System restart" --class restart {
 }
 ```
 
-**Notes:**
-- `HYPRFLUX_REPLACE_LABEL` is replaced by mkarchiso during build (or the build script can sed it)
-- `cow_spacesize=2G` gives more writable space in the live env (default 256M is tight)
-- "Copy to RAM" option loads the entire squashfs into RAM -- faster but needs 2GB+ RAM
-- The `archiso_label` MUST match `iso_label` from `profiledef.sh`
+**Key changes from original plan:**
+- Uses `search --fs-uuid %ARCHISO_UUID%` for reliable root device discovery
+- Uses `archisosearchuuid=%ARCHISO_UUID%` instead of deprecated `archisolabel=`
+- Uses template variables for all paths
+- No custom `set archiso_label=` variable needed
 
 ---
 
-### 2. `efiboot/loader/loader.conf` (~4 lines)
+### 5-9. Syslinux Configuration (Modular Structure)
 
-systemd-boot configuration for UEFI machines.
+Following the releng profile's modular approach instead of a single flat file.
+
+#### `syslinux/syslinux.cfg` (entry point)
 
 ```ini
-timeout 15
-default 01-hyprflux.conf
-editor no
+INCLUDE archiso_sys.cfg
+INCLUDE archiso_tail.cfg
 ```
 
-**Notes:**
-- `editor no` prevents users from editing kernel params at boot (security)
-- 15-second timeout before auto-selecting the default entry
-
----
-
-### 3. `efiboot/loader/entries/01-hyprflux.conf` (~6 lines)
-
-systemd-boot entry for the HyprFlux live environment.
+#### `syslinux/archiso_sys.cfg` (includes system configs)
 
 ```ini
-title   HyprFlux Installer
-linux   /arch/boot/x86_64/vmlinuz-linux
-initrd  /arch/boot/x86_64/initramfs-linux.img
-options archisobasedir=arch archisolabel=HYPRFLUX_REPLACE_LABEL cow_spacesize=2G copytoram=n
+INCLUDE archiso_head.cfg
+INCLUDE archiso_sys-linux.cfg
 ```
 
-**Note:** `HYPRFLUX_REPLACE_LABEL` is dynamically replaced at build time.
-
----
-
-### 4. `syslinux/syslinux.cfg` (~30 lines)
-
-Syslinux configuration for Legacy BIOS machines.
+#### `syslinux/archiso_head.cfg` (header/styling)
 
 ```ini
-# syslinux.cfg -- HyprFlux Live ISO (Legacy BIOS)
-
-DEFAULT hyprflux
-PROMPT 1
-TIMEOUT 150
-
+SERIAL 0 115200
 UI menu.c32
-
 MENU TITLE HyprFlux Installer
+
 MENU COLOR border       30;44   #40ffffff #a0000000 std
 MENU COLOR title        1;36;44 #9033ccff #a0000000 std
 MENU COLOR sel          7;37;40 #e0ffffff #20ffffff all
@@ -154,19 +194,35 @@ MENU COLOR timeout      1;37;40 #c0ffffff #00000000 std
 MENU COLOR msg07        37;40   #90ffffff #a0000000 std
 MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
 
+MENU CLEAR
+MENU IMMEDIATE
+MENU HELPMSGROW 18
+MENU HELPMSGENDROW -1
+
+TIMEOUT 150
+DEFAULT hyprflux
+```
+
+#### `syslinux/archiso_sys-linux.cfg` (boot entries)
+
+```ini
 LABEL hyprflux
     MENU LABEL HyprFlux Installer
     MENU DEFAULT
-    LINUX /arch/boot/x86_64/vmlinuz-linux
-    INITRD /arch/boot/x86_64/initramfs-linux.img
-    APPEND archisobasedir=arch archisolabel=HYPRFLUX_REPLACE_LABEL cow_spacesize=2G copytoram=n
+    LINUX /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux
+    INITRD /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
+    APPEND archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=n
 
 LABEL hyprflux-ram
     MENU LABEL HyprFlux Installer (Copy to RAM)
-    LINUX /arch/boot/x86_64/vmlinuz-linux
-    INITRD /arch/boot/x86_64/initramfs-linux.img
-    APPEND archisobasedir=arch archisolabel=HYPRFLUX_REPLACE_LABEL cow_spacesize=2G copytoram=y
+    LINUX /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux
+    INITRD /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img
+    APPEND archisosearchuuid=%ARCHISO_UUID% cow_spacesize=2G copytoram=y
+```
 
+#### `syslinux/archiso_tail.cfg` (footer entries)
+
+```ini
 LABEL reboot
     MENU LABEL Reboot
     COM32 reboot.c32
@@ -176,33 +232,11 @@ LABEL poweroff
     COM32 poweroff.c32
 ```
 
----
-
-### 5. `syslinux/splash.png` (optional)
-
-A 640x480 PNG splash image for the syslinux boot menu. This is optional -- without it, syslinux shows a text-only menu. Can be added later for branding.
-
-If included, add this to `syslinux.cfg`:
-```
-MENU BACKGROUND splash.png
-```
-
----
-
-## Build-Time Label Replacement
-
-The `build.sh` from Phase 1 needs a small addition to replace `HYPRFLUX_REPLACE_LABEL` with the actual ISO label in all boot config files. This can be handled by mkarchiso's built-in label replacement, OR we add a pre-build step to `build.sh`:
-
-```bash
-# In build.sh, before mkarchiso:
-ISO_LABEL="HYPRFLUX_$(date +%Y%m)"
-sed -i "s/HYPRFLUX_REPLACE_LABEL/${ISO_LABEL}/g" \
-    grub/grub.cfg \
-    efiboot/loader/entries/01-hyprflux.conf \
-    syslinux/syslinux.cfg
-```
-
-**Note:** mkarchiso may handle this automatically via the `iso_label` variable in `profiledef.sh`. If so, the sed is unnecessary. Test during Phase 1 implementation to confirm.
+**Changes from original plan:**
+- Modular structure matching releng (instead of single flat file)
+- Uses `archisosearchuuid=%ARCHISO_UUID%` instead of deprecated `archisolabel=`
+- Uses template variables for paths
+- Added `SERIAL` line for serial console support
 
 ---
 
@@ -220,11 +254,16 @@ hyprflux-iso/
 │   └── loader/
 │       ├── loader.conf
 │       └── entries/
-│           └── 01-hyprflux.conf
+│           ├── 01-hyprflux-x86_64-linux.conf
+│           └── 02-hyprflux-x86_64-linux-ram.conf
 ├── grub/                             # << Phase 2
 │   └── grub.cfg
 ├── syslinux/                         # << Phase 2
-│   └── syslinux.cfg
+│   ├── syslinux.cfg
+│   ├── archiso_sys.cfg
+│   ├── archiso_sys-linux.cfg
+│   ├── archiso_head.cfg
+│   └── archiso_tail.cfg
 ├── plans/
 ├── instructions.md
 ├── test-qemu.sh
@@ -252,7 +291,7 @@ Phase 2 only covers the **ISO's own boot process**. The **target system's bootlo
 
 3. Adjust partitioning:
    - **UEFI**: EFI system partition (ESP) required -- 1024MB FAT32
-   - **BIOS**: Optional 1MB BIOS boot partition (type `ef02`) for GPT, or MBR partitioning
+   - **BIOS**: 1MB BIOS boot partition (type `ef02`) for GPT
 
 This is detailed in Phase 4.
 
@@ -261,11 +300,12 @@ This is detailed in Phase 4.
 ## Validation Steps
 
 1. Build the ISO with `sudo bash build.sh`
-2. **UEFI test**: `./test-qemu.sh --uefi` -- should show GRUB menu with "HyprFlux Installer" entry, boots to root shell
+2. **UEFI test**: `./test-qemu.sh --uefi` -- should show systemd-boot menu with "HyprFlux Installer" entry, boots to root shell
 3. **BIOS test**: `./test-qemu.sh --bios` -- should show syslinux menu with "HyprFlux Installer" entry, boots to root shell
 4. Verify the boot menu shows proper titles ("HyprFlux Installer")
 5. Verify the "Copy to RAM" variant boots correctly (needs 2GB+ RAM in QEMU)
 6. Verify timeout (15 seconds) and auto-selection work
+7. Verify boot parameters are correct: `cat /proc/cmdline` should show `archisosearchuuid=...`
 
 ---
 

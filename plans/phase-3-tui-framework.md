@@ -102,11 +102,7 @@ set_status() {
 
 **c) Scrolling output area**
 
-The output area occupies the bottom portion of the terminal. Installation commands pipe their output here. The approach:
-
-1. After drawing the banner, calculate remaining terminal lines
-2. Set up a "scroll region" using ANSI escape sequences so output scrolls only in the bottom area
-3. All `log_step` and command output goes to this region
+The output area occupies the bottom portion of the terminal. Instead of using `tput csr` (which is fragile on bare VGA consoles and doesn't survive dialog screen clears), we use a simpler approach: just print to stdout below the banner line, and redraw the banner after any dialog interaction.
 
 ```bash
 setup_output_area() {
@@ -117,11 +113,16 @@ setup_output_area() {
     STATUS_LINE=$((BANNER_LINES + 1))
     OUTPUT_START=$((STATUS_LINE + 2))
     
-    # Set scroll region to bottom of screen
-    tput csr $OUTPUT_START $((term_lines - 1))
+    # Move cursor to output area start
     tput cup $OUTPUT_START 0
 }
 ```
+
+**NOTE:** The original plan used `tput csr` scroll regions. This is fragile on bare VGA consoles and doesn't survive `dialog` screen clears well. The revised approach simply:
+1. Draws the banner
+2. Prints output below it sequentially
+3. After any `dialog` call, redraws the banner + repositions cursor
+This is more robust across different terminal capabilities.
 
 **d) Logging functions (output to scroll area)**
 
@@ -157,7 +158,7 @@ run_cmd() {
 
 **f) Dialog wrappers (for interactive prompts)**
 
-When user input is needed, we temporarily leave the scrolling output mode, show a `dialog` box, then restore the banner + output area.
+When user input is needed, we show a `dialog` box, then restore the banner + output area.
 
 ```bash
 # Show a dialog menu and return the selection
@@ -181,8 +182,8 @@ dlg_menu() {
     setup_output_area
     
     # Return the actual item (not the number)
-    local idx=$((choice - 1))
-    echo "${@:$choice:1}"
+    local idx=$((choice))
+    echo "${!idx}"
 }
 
 # Yes/No dialog
@@ -236,8 +237,7 @@ die() {
     log_error "$@"
     log_error "Installation failed. Dropping to shell for debugging."
     log_error "You can re-run the installer with: bash ~/hyprflux-install.sh"
-    # Reset scroll region so shell works normally
-    tput rmcup 2>/dev/null || true
+    # Reset terminal
     tput sgr0
     exec /bin/bash
 }
@@ -267,6 +267,15 @@ detect_boot_mode() {
     fi
 }
 
+# ====== NVIDIA detection (run BEFORE chroot — needs live PCI bus) ======
+detect_nvidia() {
+    if lspci 2>/dev/null | grep -qi nvidia; then
+        echo "yes"
+    else
+        echo "no"
+    fi
+}
+
 # ====== Disk helpers ======
 get_part_prefix() {
     local disk="$1"
@@ -281,6 +290,10 @@ get_part_prefix() {
 MOUNT_POINT="/mnt/archinstall"
 ```
 
+**Changes from original plan:**
+- Removed `tput rmcup` from `die()` (we're not using alternate screen)
+- Added `detect_nvidia()` — MUST be called on the live ISO, not inside chroot (no PCI bus in chroot)
+
 ---
 
 ### 3. Installer Skeleton: `airootfs/root/hyprflux-install.sh` (~100 lines, skeleton)
@@ -291,10 +304,6 @@ This is the entry point. In Phase 3, we create the skeleton that sources librari
 #!/bin/bash
 # ============================================================
 # hyprflux-install.sh -- HyprFlux Arch Linux Installer
-# ============================================================
-# TUI installer for HyprFlux (Hyprland desktop on Arch Linux).
-# Boots from the live ISO, prompts for configuration, installs
-# base Arch, then sets up HyprFlux with all dotfiles and themes.
 # ============================================================
 set -euo pipefail
 
@@ -347,6 +356,8 @@ log_ok "Remove the USB drive and reboot to start using HyprFlux."
 ### 4. Auto-Launch: `airootfs/root/.zlogin` (~10 lines)
 
 Automatically starts the installer when root logs in on tty1 (which happens automatically via the autologin.conf from Phase 1).
+
+**CRITICAL PREREQUISITE:** `airootfs/etc/passwd` must set root's shell to `/usr/bin/zsh`. Without this, `.zlogin` is never sourced (bash reads `.bash_login` or `.bash_profile`, not `.zlogin`).
 
 ```bash
 # .zlogin -- Auto-launch HyprFlux installer on tty1
@@ -443,6 +454,7 @@ file_permissions=(
   ["/etc/shadow"]="0:0:400"
   ["/root"]="0:0:750"
   ["/root/hyprflux-install.sh"]="0:0:755"
+  ["/root/lib"]="0:0:755"
   ["/root/lib/tui.sh"]="0:0:755"
   ["/root/lib/common.sh"]="0:0:755"
 )
@@ -463,12 +475,18 @@ hyprflux-iso/
 │   │   ├── hostname
 │   │   ├── locale.conf
 │   │   ├── locale.gen
+│   │   ├── passwd                                  # << Phase 1 (root shell = zsh)
 │   │   ├── shadow
 │   │   ├── motd                                    # << Phase 3
 │   │   ├── mkinitcpio.conf.d/archiso.conf
+│   │   ├── mkinitcpio.d/linux.preset
 │   │   └── systemd/
-│   │       ├── network/20-ethernet.network
-│   │       └── system/getty@tty1.service.d/autologin.conf
+│   │       ├── journal.conf.d/volatile-storage.conf
+│   │       ├── logind.conf.d/do-not-suspend.conf
+│   │       └── system/
+│   │           ├── pacman-init.service
+│   │           ├── multi-user.target.wants/ (symlinks)
+│   │           └── getty@tty1.service.d/autologin.conf
 │   └── root/                                       # << Phase 3
 │       ├── .zlogin
 │       ├── hyprflux-install.sh                     # (skeleton)
@@ -503,5 +521,5 @@ hyprflux-iso/
 
 ## Dependencies
 
-- **Requires Phase 1** (profile, packages) and **Phase 2** (boot configs) to produce a bootable ISO
+- **Requires Phase 1** (profile, packages incl. passwd file) and **Phase 2** (boot configs) to produce a bootable ISO
 - **Required by Phase 4** -- all installer steps use the TUI framework functions

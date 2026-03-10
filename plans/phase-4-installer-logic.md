@@ -211,8 +211,8 @@ step_timezone() {
     
     if [[ -n "$detected" ]] && [[ -f "/usr/share/zoneinfo/$detected" ]]; then
         if dlg_yesno "Detected timezone: $detected\n\nIs this correct?"; then
-            TIMEZONE="$detected"
-            log_ok "Timezone: $TIMEZONE"
+            INSTALL_TIMEZONE="$detected"
+            log_ok "Timezone: $INSTALL_TIMEZONE"
             return 0
         fi
     fi
@@ -238,8 +238,8 @@ step_timezone() {
     local city
     city=$(dlg_menu "Select timezone city" "${cities[@]}")
     
-    TIMEZONE="${region}/${city}"
-    log_ok "Timezone: $TIMEZONE"
+    INSTALL_TIMEZONE="${region}/${city}"
+    log_ok "Timezone: $INSTALL_TIMEZONE"
 }
 ```
 
@@ -274,8 +274,8 @@ step_locale() {
         "tr_TR.UTF-8"
     )
     
-    LOCALE=$(dlg_menu "Select locale" "${locales[@]}")
-    log_ok "Locale: $LOCALE"
+    INSTALL_LOCALE=$(dlg_menu "Select locale" "${locales[@]}")
+    log_ok "Locale: $INSTALL_LOCALE"
 }
 ```
 
@@ -308,9 +308,9 @@ step_keyboard() {
         keymap=$(dlg_menu "All keyboard layouts" "${all_keymaps[@]}")
     fi
     
-    KEYMAP="$keymap"
-    loadkeys "$KEYMAP" 2>/dev/null || true
-    log_ok "Keyboard: $KEYMAP"
+    INSTALL_KEYMAP="$keymap"
+    loadkeys "$INSTALL_KEYMAP" 2>/dev/null || true
+    log_ok "Keyboard: $INSTALL_KEYMAP"
 }
 ```
 
@@ -323,9 +323,9 @@ step_hostname() {
     set_status "Hostname"
     
     while true; do
-        HOSTNAME=$(dlg_input "Enter hostname for this machine" "hyprflux")
+        INSTALL_HOSTNAME=$(dlg_input "Enter hostname for this machine" "hyprflux")
         
-        if validate_hostname "$HOSTNAME"; then
+        if validate_hostname "$INSTALL_HOSTNAME"; then
             break
         fi
         
@@ -333,9 +333,11 @@ step_hostname() {
         show_banner && setup_output_area
     done
     
-    log_ok "Hostname: $HOSTNAME"
+    log_ok "Hostname: $INSTALL_HOSTNAME"
 }
 ```
+
+**Change from original plan:** Variable renamed from `HOSTNAME` to `INSTALL_HOSTNAME` to avoid shadowing the bash builtin `$HOSTNAME`.
 
 ---
 
@@ -347,9 +349,9 @@ step_user() {
     
     # Username
     while true; do
-        USERNAME=$(dlg_input "Enter username" "")
+        INSTALL_USERNAME=$(dlg_input "Enter username" "")
         
-        if validate_username "$USERNAME"; then
+        if validate_username "$INSTALL_USERNAME"; then
             break
         fi
         
@@ -360,12 +362,12 @@ step_user() {
     # Password
     while true; do
         local pass1 pass2
-        pass1=$(dlg_password "Enter password for '$USERNAME'")
+        pass1=$(dlg_password "Enter password for '$INSTALL_USERNAME'")
         pass2=$(dlg_password "Confirm password")
         
         if [[ "$pass1" == "$pass2" ]]; then
             if [[ -n "$pass1" ]]; then
-                PASSWORD="$pass1"
+                INSTALL_PASSWORD="$pass1"
                 break
             fi
             dialog --msgbox "Password cannot be empty." 6 40
@@ -375,9 +377,11 @@ step_user() {
         show_banner && setup_output_area
     done
     
-    log_ok "User: $USERNAME"
+    log_ok "User: $INSTALL_USERNAME"
 }
 ```
+
+**Change from original plan:** Variables renamed from `USERNAME`/`PASSWORD` to `INSTALL_USERNAME`/`INSTALL_PASSWORD` for clarity and to avoid conflicts.
 
 ---
 
@@ -404,14 +408,14 @@ step_disk_auto() {
         die "No disks found!"
     fi
     
-    DISK=$(dialog --clear --title "Select Disk" \
+    INSTALL_DISK=$(dialog --clear --title "Select Disk" \
         --menu "Choose a disk to install to.\nWARNING: The selected disk will be completely erased!" \
         20 70 10 "${disks[@]}" 2>&1 >/dev/tty)
     show_banner && setup_output_area
     
     # Double confirmation
     local confirm
-    confirm=$(dlg_input "Type 'yes' to confirm erasing ALL data on $DISK" "")
+    confirm=$(dlg_input "Type 'yes' to confirm erasing ALL data on $INSTALL_DISK" "")
     if [[ "$confirm" != "yes" ]]; then
         log_warn "Disk setup cancelled."
         return 1
@@ -430,26 +434,26 @@ step_disk_auto() {
     log_step "Boot mode: ${BOOT_MODE^^}"
     
     # Partition
-    log_step "Partitioning $DISK..."
+    log_step "Partitioning $INSTALL_DISK..."
     
     local part_prefix
-    part_prefix=$(get_part_prefix "$DISK")
+    part_prefix=$(get_part_prefix "$INSTALL_DISK")
     
     # Wipe
-    sgdisk -Z "$DISK" 2>/dev/null || true
-    wipefs -a "$DISK" 2>/dev/null || true
+    sgdisk -Z "$INSTALL_DISK" 2>/dev/null || true
+    wipefs -a "$INSTALL_DISK" 2>/dev/null || true
     
     if [[ "$BOOT_MODE" == "uefi" ]]; then
         # GPT + EFI partition
-        sgdisk -o "$DISK"
-        sgdisk -n 1:0:+1024M -t 1:ef00 -c 1:"EFI" "$DISK"
+        sgdisk -o "$INSTALL_DISK"
+        sgdisk -n 1:0:+1024M -t 1:ef00 -c 1:"EFI" "$INSTALL_DISK"
         
         local next_part=2
         if [[ "$USE_SWAP" == true ]]; then
-            sgdisk -n 2:0:+${SWAP_SIZE}G -t 2:8200 -c 2:"Swap" "$DISK"
+            sgdisk -n 2:0:+${SWAP_SIZE}G -t 2:8200 -c 2:"Swap" "$INSTALL_DISK"
             next_part=3
         fi
-        sgdisk -n ${next_part}:0:0 -t ${next_part}:8300 -c ${next_part}:"Root" "$DISK"
+        sgdisk -n ${next_part}:0:0 -t ${next_part}:8300 -c ${next_part}:"Root" "$INSTALL_DISK"
         
         EFI_PART="${part_prefix}1"
         if [[ "$USE_SWAP" == true ]]; then
@@ -460,17 +464,16 @@ step_disk_auto() {
         fi
         
     else
-        # BIOS: MBR partitioning
-        # Create a 1MB BIOS boot partition for GRUB + optional swap + root
-        sgdisk -o "$DISK"
-        sgdisk -n 1:0:+1M -t 1:ef02 -c 1:"BIOS Boot" "$DISK"
+        # BIOS: GPT with BIOS boot partition
+        sgdisk -o "$INSTALL_DISK"
+        sgdisk -n 1:0:+1M -t 1:ef02 -c 1:"BIOS Boot" "$INSTALL_DISK"
         
         local next_part=2
         if [[ "$USE_SWAP" == true ]]; then
-            sgdisk -n 2:0:+${SWAP_SIZE}G -t 2:8200 -c 2:"Swap" "$DISK"
+            sgdisk -n 2:0:+${SWAP_SIZE}G -t 2:8200 -c 2:"Swap" "$INSTALL_DISK"
             next_part=3
         fi
-        sgdisk -n ${next_part}:0:0 -t ${next_part}:8300 -c ${next_part}:"Root" "$DISK"
+        sgdisk -n ${next_part}:0:0 -t ${next_part}:8300 -c ${next_part}:"Root" "$INSTALL_DISK"
         
         BIOS_PART="${part_prefix}1"
         if [[ "$USE_SWAP" == true ]]; then
@@ -482,7 +485,7 @@ step_disk_auto() {
     fi
     
     # Let kernel re-read partition table
-    partprobe "$DISK" 2>/dev/null || true
+    partprobe "$INSTALL_DISK" 2>/dev/null || true
     sleep 2
     
     # Format
@@ -612,7 +615,7 @@ step_base_install() {
     
     # Optimize mirrors
     log_step "Optimizing mirror list..."
-    reflector --latest 10 --protocol https --sort rate \
+    reflector --latest 20 --protocol https --sort rate \
         --save /etc/pacman.d/mirrorlist 2>&1 | while IFS= read -r line; do
         log_cmd "$line"
     done
@@ -649,6 +652,8 @@ step_base_install() {
 }
 ```
 
+**Change from original plan:** `reflector --latest 20` instead of `--latest 10` (less aggressive, more reliable mirror selection).
+
 ---
 
 ## Step 9: Configure Base System (arch-chroot)
@@ -661,37 +666,41 @@ step_configure_system() {
     
     BOOT_MODE=$(detect_boot_mode)
     
+    # Detect NVIDIA BEFORE entering chroot (needs live PCI bus)
+    HAS_NVIDIA=$(detect_nvidia)
+    log_step "NVIDIA GPU detected: $HAS_NVIDIA"
+    
     # Write a configuration script to run inside chroot
     cat > "${MOUNT_POINT}/tmp/hyprflux-configure.sh" << CHROOT_EOF
 #!/bin/bash
 set -e
 
 echo "==> Setting timezone..."
-ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
+ln -sf /usr/share/zoneinfo/${INSTALL_TIMEZONE} /etc/localtime
 hwclock --systohc
 
 echo "==> Generating locales..."
-sed -i "s/^#${LOCALE}/${LOCALE}/" /etc/locale.gen
+sed -i "s/^#${INSTALL_LOCALE}/${INSTALL_LOCALE}/" /etc/locale.gen
 locale-gen
-echo "LANG=${LOCALE}" > /etc/locale.conf
+echo "LANG=${INSTALL_LOCALE}" > /etc/locale.conf
 
 echo "==> Setting keyboard layout..."
-echo "KEYMAP=${KEYMAP}" > /etc/vconsole.conf
+echo "KEYMAP=${INSTALL_KEYMAP}" > /etc/vconsole.conf
 
 echo "==> Setting hostname..."
-echo "${HOSTNAME}" > /etc/hostname
+echo "${INSTALL_HOSTNAME}" > /etc/hostname
 cat > /etc/hosts << HOSTS_EOF
 127.0.0.1   localhost
 ::1         localhost
-127.0.1.1   ${HOSTNAME}.localdomain ${HOSTNAME}
+127.0.1.1   ${INSTALL_HOSTNAME}.localdomain ${INSTALL_HOSTNAME}
 HOSTS_EOF
 
 echo "==> Setting root password..."
-echo "root:${PASSWORD}" | chpasswd
+echo "root:${INSTALL_PASSWORD}" | chpasswd
 
-echo "==> Creating user '${USERNAME}'..."
-useradd -m -G wheel -s /bin/bash "${USERNAME}"
-echo "${USERNAME}:${PASSWORD}" | chpasswd
+echo "==> Creating user '${INSTALL_USERNAME}'..."
+useradd -m -G wheel -s /bin/bash "${INSTALL_USERNAME}"
+echo "${INSTALL_USERNAME}:${INSTALL_PASSWORD}" | chpasswd
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
 echo "==> Configuring pacman..."
@@ -705,7 +714,7 @@ echo "==> Installing GRUB bootloader..."
 if [[ "${BOOT_MODE}" == "uefi" ]]; then
     grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 else
-    grub-install --target=i386-pc ${DISK}
+    grub-install --target=i386-pc ${INSTALL_DISK}
 fi
 grub-mkconfig -o /boot/grub/grub.cfg
 
@@ -730,6 +739,11 @@ CHROOT_EOF
 }
 ```
 
+**Changes from original plan:**
+- All variables renamed: `TIMEZONE` -> `INSTALL_TIMEZONE`, `HOSTNAME` -> `INSTALL_HOSTNAME`, etc.
+- NVIDIA detection done HERE (before chroot) using `detect_nvidia()` from common.sh
+- `HAS_NVIDIA` variable is set here and passed to Phase 5's chroot wrapper as an env var
+
 ---
 
 ## Main Flow (assembling all steps)
@@ -738,17 +752,18 @@ This goes into `hyprflux-install.sh`, replacing the skeleton from Phase 3:
 
 ```bash
 # ====== Collected configuration ======
-TIMEZONE=""
-LOCALE="en_US.UTF-8"
-KEYMAP="us"
-HOSTNAME="hyprflux"
-USERNAME=""
-PASSWORD=""
-DISK=""
+INSTALL_TIMEZONE=""
+INSTALL_LOCALE="en_US.UTF-8"
+INSTALL_KEYMAP="us"
+INSTALL_HOSTNAME="hyprflux"
+INSTALL_USERNAME=""
+INSTALL_PASSWORD=""
+INSTALL_DISK=""
 BOOT_MODE=""
 MOUNT_POINT="/mnt/archinstall"
 USE_SWAP=false
 SWAP_SIZE=0
+HAS_NVIDIA="no"
 
 # ====== Run Steps ======
 setup_network          # Step 0

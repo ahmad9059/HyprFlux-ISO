@@ -8,46 +8,7 @@ Set up automated ISO building via GitHub Actions, establish a testing workflow, 
 
 ## 6.1 GitHub Actions Workflow
 
-The existing `.github/workflows/build-iso.yml` is already well-structured. It needs minor updates to match our finalized project structure.
-
-### Updated Workflow Overview
-
-```yaml
-name: Build HyprFlux ISO
-
-on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  workflow_dispatch:  # Manual trigger
-
-jobs:
-  build-iso:
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:latest
-      options: --privileged
-    steps:
-      - Install archiso + dependencies
-      - Checkout repository
-      - Build ISO with mkarchiso
-      - Upload ISO as artifact
-      - Generate SHA256 checksum
-  
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-iso]
-    steps:
-      - Create GitHub Release
-      - Attach ISO + SHA256
-```
-
-### Key Changes from Existing Workflow
-
-1. **Remove AUR pre-build job** (for now -- Approach A from Phase 5 means packages are built during install, not baked in)
-2. **Remove prepare-assets.sh** step (wallpapers are cloned at install time)
-3. **Simplify to just build the ISO** -- no custom repos needed
-4. Keep the release job for tagged versions
+The existing `.github/workflows/build-iso.yml` has a 3-job structure (build-aur, build-iso, release). We preserve the AUR pre-build infrastructure for future Approach B optimization but simplify the active workflow.
 
 ### Updated Workflow
 
@@ -104,6 +65,21 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+  # Future: Uncomment when switching to Approach B (pre-built AUR packages)
+  # build-aur:
+  #   name: Build AUR Packages
+  #   runs-on: ubuntu-latest
+  #   container:
+  #     image: archlinux:latest
+  #     options: --privileged
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: bash aur/build-aur.sh
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: aur-packages
+  #         path: aur/repo/
+
   release:
     name: Create Release
     runs-on: ubuntu-latest
@@ -155,6 +131,10 @@ jobs:
           prerelease: false
 ```
 
+**Changes from original plan:**
+- Preserved AUR pre-build job as commented-out section (ready for Approach B)
+- No changes to the `build-iso` or `release` jobs — they were already correct
+
 ---
 
 ## 6.2 Testing Workflow
@@ -166,10 +146,11 @@ The existing `test-qemu.sh` already handles UEFI and BIOS testing. It creates a 
 **Testing checklist (manual, run for each build):**
 
 #### Boot Tests
-- [ ] UEFI boot: `./test-qemu.sh --uefi` -- GRUB menu appears, boots to installer
+- [ ] UEFI boot: `./test-qemu.sh --uefi` -- systemd-boot menu appears, boots to installer
 - [ ] BIOS boot: `./test-qemu.sh --bios` -- syslinux menu appears, boots to installer
 - [ ] Auto-login works (no password prompt on tty1)
 - [ ] Banner displays correctly (proper alignment, colors)
+- [ ] pacman keyring is initialized (`pacman-key --list-keys`)
 
 #### Network Tests
 - [ ] Ethernet auto-connects in QEMU (user networking)
@@ -198,19 +179,26 @@ The existing `test-qemu.sh` already handles UEFI and BIOS testing. It creates a 
 - [ ] pacstrap completes without errors
 - [ ] fstab is generated correctly
 - [ ] chroot configuration runs (timezone, locale, GRUB)
-- [ ] HyprFlux repos clone successfully
-- [ ] Arch-Hyprland install scripts run
-- [ ] HyprFlux dotsSetup runs all modules
+- [ ] HyprFlux repos clone successfully in chroot
+- [ ] systemctl shim works (no errors from --now calls)
+- [ ] yay installs successfully as non-root user
+- [ ] Arch-Hyprland scripts complete (with shim)
+- [ ] HyprFlux dotsSetup modules complete
+- [ ] Module 08 (GTK) is deferred to first-boot
+- [ ] Module 17 (optional packages) is skipped
 - [ ] SDDM, Bluetooth, NetworkManager services enabled
+- [ ] First-boot fixup script is in place
 
 #### Post-Install Tests
 - [ ] Unmount succeeds
 - [ ] Reboot prompt shows
 - [ ] After reboot: SDDM login screen appears
 - [ ] Login with created user
+- [ ] First-boot fixup runs automatically (GTK theme + audio)
 - [ ] Hyprland desktop loads (Waybar, wallpaper, etc.)
 - [ ] Terminal (Kitty) works with zsh
 - [ ] Rofi launches with Super key
+- [ ] Audio works (PipeWire via first-boot service)
 
 ### Automated Smoke Test (future)
 
@@ -286,20 +274,7 @@ skills-lock.json
 
 ---
 
-## 6.5 Project Documentation
-
-A brief README.md should be created (when you're ready) covering:
-
-1. What HyprFlux ISO is
-2. How to build the ISO (`sudo bash build.sh`)
-3. How to test (`./test-qemu.sh`)
-4. How to write to USB (`dd` command)
-5. System requirements (disk space, RAM, internet)
-6. Architecture diagram (from your reference image)
-
----
-
-## Directory Structure (Final)
+## 6.5 Directory Structure (Final)
 
 ```
 hyprflux-iso/
@@ -311,14 +286,21 @@ hyprflux-iso/
 │   │   ├── hostname
 │   │   ├── locale.conf
 │   │   ├── locale.gen
+│   │   ├── passwd                     # root shell = zsh
 │   │   ├── motd
 │   │   ├── shadow
 │   │   ├── mkinitcpio.conf.d/
 │   │   │   └── archiso.conf
+│   │   ├── mkinitcpio.d/
+│   │   │   └── linux.preset           # archiso-only preset
 │   │   └── systemd/
-│   │       ├── network/
-│   │       │   └── 20-ethernet.network
+│   │       ├── journal.conf.d/
+│   │       │   └── volatile-storage.conf
+│   │       ├── logind.conf.d/
+│   │       │   └── do-not-suspend.conf
 │   │       └── system/
+│   │           ├── pacman-init.service
+│   │           ├── multi-user.target.wants/  # symlinks
 │   │           └── getty@tty1.service.d/
 │   │               └── autologin.conf
 │   └── root/
@@ -326,16 +308,22 @@ hyprflux-iso/
 │       ├── hyprflux-install.sh        # ~500 lines (THE installer)
 │       └── lib/
 │           ├── tui.sh                 # TUI framework
-│           └── common.sh              # Shared utilities
+│           ├── common.sh              # Shared utilities
+│           └── hyprflux-chroot-wrapper.sh  # Chroot integration
 ├── efiboot/
 │   └── loader/
 │       ├── loader.conf
 │       └── entries/
-│           └── 01-hyprflux.conf
+│           ├── 01-hyprflux-x86_64-linux.conf
+│           └── 02-hyprflux-x86_64-linux-ram.conf
 ├── grub/
 │   └── grub.cfg
 ├── syslinux/
-│   └── syslinux.cfg
+│   ├── syslinux.cfg
+│   ├── archiso_sys.cfg
+│   ├── archiso_sys-linux.cfg
+│   ├── archiso_head.cfg
+│   └── archiso_tail.cfg
 ├── build.sh                           # Master build script
 ├── profiledef.sh                      # archiso profile
 ├── packages.x86_64                    # Live env packages
@@ -352,9 +340,9 @@ hyprflux-iso/
     └── phase-6-cicd-testing.md
 ```
 
-**Total new files:** ~20 files
-**Total new code:** ~900 lines (installer ~500, TUI lib ~200, build/config ~200)
-**Existing code change:** ~6 lines in HyprFlux `install.sh`
+**Total new files:** ~25 files
+**Total new code:** ~1200 lines (installer ~500, TUI lib ~200, chroot wrapper ~350, build/config ~150)
+**Existing code change:** ~6 lines in HyprFlux `install.sh` (optional, for future standalone ISO mode)
 
 ---
 
@@ -366,9 +354,9 @@ hyprflux-iso/
 | Phase 2 | 20-30 min | Boot configs (UEFI + BIOS) |
 | Phase 3 | 1-2 hours | TUI framework + branding |
 | Phase 4 | 2-4 hours | Installer logic (the big one) |
-| Phase 5 | 2-3 hours | HyprFlux integration |
+| Phase 5 | 3-5 hours | HyprFlux chroot wrapper integration |
 | Phase 6 | 1 hour | CI/CD workflow update |
-| **Total** | **~7-11 hours** | Full implementation |
+| **Total** | **~8-13 hours** | Full implementation |
 
 ---
 
@@ -384,7 +372,7 @@ hyprflux-iso/
 
 ## Future Enhancements (Post v1.0)
 
-1. **Pre-built AUR packages** -- bake wallust, wlogout, etc. into the ISO
+1. **Pre-built AUR packages** -- bake wallust, wlogout, etc. into the ISO (Approach B, infrastructure already in workflow)
 2. **Offline mode** -- include all packages in the ISO for no-internet installs
 3. **Custom kernel** -- linux-zen or custom config for better desktop performance
 4. **Themed boot screen** -- Custom GRUB/syslinux theme with HyprFlux branding
