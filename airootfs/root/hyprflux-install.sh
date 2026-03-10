@@ -626,6 +626,9 @@ step_base_install() {
     mkdir -p "${MOUNT_POINT}/etc/pacman.d"
     cp /etc/pacman.d/mirrorlist "${MOUNT_POINT}/etc/pacman.d/mirrorlist"
 
+    # Create vconsole.conf before pacstrap (needed by mkinitcpio sd-vconsole hook)
+    echo "KEYMAP=${INSTALL_KEYMAP}" > "${MOUNT_POINT}/etc/vconsole.conf"
+
     # Base packages to install
     local base_pkgs=(
         base linux linux-firmware
@@ -663,6 +666,9 @@ step_base_install() {
 # ============================================================================
 step_configure_system() {
     set_status "Configuring System..."
+
+    # Ensure /tmp exists in target
+    mkdir -p "${MOUNT_POINT}/tmp"
 
     # Write configuration script to run inside chroot
     cat > "${MOUNT_POINT}/tmp/hyprflux-configure.sh" << CHROOT_EOF
