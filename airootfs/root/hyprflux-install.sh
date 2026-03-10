@@ -689,11 +689,9 @@ echo "KEYMAP=${INSTALL_KEYMAP}" > /etc/vconsole.conf
 
 echo "==> Setting hostname..."
 echo "${INSTALL_HOSTNAME}" > /etc/hostname
-cat > /etc/hosts << HOSTS_EOF
-127.0.0.1   localhost
-::1         localhost
-127.0.1.1   ${INSTALL_HOSTNAME}.localdomain ${INSTALL_HOSTNAME}
-HOSTS_EOF
+echo "127.0.0.1   localhost" > /etc/hosts
+echo "::1         localhost" >> /etc/hosts
+echo "127.0.1.1   ${INSTALL_HOSTNAME}.localdomain ${INSTALL_HOSTNAME}" >> /etc/hosts
 
 echo "==> Setting root password..."
 echo "root:${INSTALL_PASSWORD}" | chpasswd
@@ -727,6 +725,14 @@ echo "==> Base system configuration complete."
 CHROOT_EOF
 
     chmod +x "${MOUNT_POINT}/tmp/hyprflux-configure.sh"
+
+    # Debug: verify script was created
+    if [[ -f "${MOUNT_POINT}/tmp/hyprflux-configure.sh" ]]; then
+        log_ok "Chroot script created: ${MOUNT_POINT}/tmp/hyprflux-configure.sh"
+        log_info "Script size: $(wc -c < "${MOUNT_POINT}/tmp/hyprflux-configure.sh") bytes"
+    else
+        die "Failed to create chroot configuration script!"
+    fi
 
     log_step "Running system configuration in chroot..."
 
