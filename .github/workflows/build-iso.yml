@@ -1,0 +1,194 @@
+name: Build HyprFlux ISO
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      skip_aur:
+        description: 'Skip AUR package build (use cached)'
+        required: false
+        default: 'false'
+        type: boolean
+      fetch_wallpapers:
+        description: 'Download additional wallpapers'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: iso-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-aur:
+    name: Build AUR Packages
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.skip_aur != 'true' }}
+    container:
+      image: archlinux:latest
+      options: --privileged
+    steps:
+      - name: Install base dependencies
+        run: |
+          pacman -Syu --noconfirm
+          # base-devel: makepkg, gcc, etc.
+          # git/curl/sudo: clone AUR repos and run as build user
+          # fakeroot/debugedit: required by makepkg
+          # rust: wallust build dependency
+          # meson/scdoc/gtk-layer-shell/gtk3: wlogout build dependencies
+          pacman -S --noconfirm --needed base-devel git curl sudo fakeroot debugedit \
+            rust meson scdoc gtk-layer-shell gtk3 gobject-introspection \
+            intltool
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create build user
+        run: |
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+      - name: Build AUR packages
+        run: |
+          chown -R builder:builder aur/
+          sudo -u builder bash aur/build-aur.sh
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aur-build-logs
+          path: aur/logs/
+          retention-days: 7
+
+      - name: Upload AUR repo
+        uses: actions/upload-artifact@v4
+        with:
+          name: aur-repo
+          path: aur/repo/
+          retention-days: 7
+
+  build-iso:
+    name: Build ISO
+    runs-on: ubuntu-latest
+    needs: [build-aur]
+    if: |
+      always() &&
+      (needs.build-aur.result == 'success' || needs.build-aur.result == 'skipped')
+    container:
+      image: archlinux:latest
+      options: --privileged
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed archiso git curl file
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download AUR repo
+        if: ${{ github.event.inputs.skip_aur != 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: aur-repo
+          path: aur/repo/
+
+      - name: Download external assets
+        env:
+          FETCH_WALLPAPERS: ${{ github.event.inputs.fetch_wallpapers == 'true' && '1' || '0' }}
+        run: |
+          bash prepare-assets.sh
+
+      - name: Fix pacman.conf repo path
+        run: |
+          REPO_PATH="$(pwd)/aur/repo"
+          sed -i "s|Server = file:///.*aur/repo|Server = file://${REPO_PATH}|" pacman.conf
+
+      - name: Build ISO
+        run: |
+          mkarchiso -v -w work -o out .
+
+      - name: Get ISO filename
+        id: iso
+        run: |
+          ISO_FILE=$(ls out/*.iso | head -1)
+          ISO_NAME=$(basename "${ISO_FILE}")
+          ISO_SIZE=$(du -h "${ISO_FILE}" | cut -f1)
+          echo "file=${ISO_FILE}" >> "$GITHUB_OUTPUT"
+          echo "name=${ISO_NAME}" >> "$GITHUB_OUTPUT"
+          echo "size=${ISO_SIZE}" >> "$GITHUB_OUTPUT"
+          # Generate SHA256
+          sha256sum "${ISO_FILE}" > "${ISO_FILE}.sha256"
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.iso.outputs.name }}
+          path: |
+            ${{ steps.iso.outputs.file }}
+            ${{ steps.iso.outputs.file }}.sha256
+          retention-days: 14
+          compression-level: 0  # ISO is already compressed
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-iso]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download ISO artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Find ISO
+        id: find
+        run: |
+          ISO_FILE=$(find artifacts/ -name "*.iso" | head -1)
+          SHA_FILE="${ISO_FILE}.sha256"
+          echo "iso=${ISO_FILE}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA_FILE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.find.outputs.tag }}
+          name: "HyprFlux ${{ steps.find.outputs.tag }}"
+          body: |
+            ## HyprFlux ${{ steps.find.outputs.tag }}
+
+            A pre-configured Hyprland desktop environment based on Arch Linux.
+
+            ### Download
+            Download the ISO below and write it to a USB drive:
+            ```bash
+            sudo dd bs=4M if=hyprflux-*.iso of=/dev/sdX status=progress oflag=sync
+            ```
+
+            ### Features
+            - Pre-configured Hyprland desktop with Waybar, Rofi, SDDM
+            - NVIDIA GPU auto-detection
+            - Custom TUI installer for disk installation
+            - 28 Chromium PWA web apps
+            - Full theming (GRUB Vimix, Plymouth, GTK, cursors)
+            - Supports both UEFI and Legacy BIOS boot
+
+            ### Verify
+            ```bash
+            sha256sum -c hyprflux-*.iso.sha256
+            ```
+          files: |
+            ${{ steps.find.outputs.iso }}
+            ${{ steps.find.outputs.sha }}
+          draft: false
+          prerelease: false
