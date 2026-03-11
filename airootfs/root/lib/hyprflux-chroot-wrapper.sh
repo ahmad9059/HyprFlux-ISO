@@ -13,7 +13,10 @@
 # individual install scripts in the correct order with shims to handle
 # chroot limitations (no systemd PID 1, no dbus, no PCI bus, etc.)
 # ============================================================================
-set -e
+set -uo pipefail
+# NOTE: We intentionally do NOT use set -e here.
+# Phase A/B scripts may fail (network, AUR, etc.) and we must always
+# reach Phase C to enable sddm, even if earlier phases have errors.
 
 TARGET_USER="$1"
 HAS_NVIDIA="$2"
@@ -41,6 +44,8 @@ echo "==> Phase 0: Setting up chroot environment..."
 cat > /usr/local/bin/systemctl-shim << 'SHIM_EOF'
 #!/bin/bash
 # systemctl shim for chroot environment
+# IMPORTANT: calls /usr/bin/systemctl.real (the original binary),
+# NOT /usr/bin/systemctl (which is this shim) to avoid infinite recursion.
 args=("$@")
 filtered=()
 has_runtime_verb=false
@@ -65,20 +70,20 @@ for arg in "${args[@]}"; do
     esac
 done
 
-# Skip runtime commands entirely
+# Skip runtime commands entirely (they fail in chroot with no PID 1)
 if [[ "$has_runtime_verb" == true ]]; then
-    echo "[shim] Skipping: systemctl ${args[*]}" >&2
+    echo "[shim] Skipping runtime verb: systemctl ${args[*]}" >&2
     exit 0
 fi
 
 # For --user commands: attempt but don't fail hard
 if [[ "$has_user" == true ]]; then
-    /usr/bin/systemctl "${filtered[@]}" 2>/dev/null || true
+    /usr/bin/systemctl.real "${filtered[@]}" 2>/dev/null || true
     exit 0
 fi
 
-# For system-level "enable" commands, use the real systemctl
-/usr/bin/systemctl "${filtered[@]}"
+# For system-level "enable" commands, use the real systemctl binary
+/usr/bin/systemctl.real "${filtered[@]}"
 SHIM_EOF
 chmod +x /usr/local/bin/systemctl-shim
 
@@ -119,8 +124,10 @@ chmod +x /usr/local/bin/nwg-look
 echo "${TARGET_USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/hyprflux-temp
 chmod 440 /etc/sudoers.d/hyprflux-temp
 
-# --- Pre-set shell to zsh ---
-usermod -s /usr/bin/zsh "${TARGET_USER}" 2>/dev/null || true
+# --- Pre-set shell to zsh (only if zsh is already installed) ---
+# zsh.sh in Phase A installs zsh; we set the shell after that runs.
+# Here we ensure at minimum /bin/bash is set so 'su -' works reliably.
+usermod -s /bin/bash "${TARGET_USER}" 2>/dev/null || true
 
 echo "    Shims installed."
 
@@ -135,19 +142,24 @@ echo ""
 echo "==> Phase A: Arch-Hyprland components"
 echo ""
 
-# Helper function to run script as target user
+# Helper function to run an install script as the target user.
+# Uses -s /bin/bash explicitly so it works before zsh is installed.
 run_as_user() {
     local script="$1"
     local script_name
     script_name=$(basename "$script")
-    
+
     if [[ ! -f "$script" ]]; then
         echo "    [SKIP] ${script_name} (not found)"
         return 0
     fi
-    
+
     echo "    Running ${script_name}..."
-    su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash ${script}" || {
+    su - "${TARGET_USER}" -s /bin/bash -c "
+        export HOME=\"${TARGET_HOME}\"
+        cd \"${ARCH_HYPR_DIR}\" 2>/dev/null || cd \"\$HOME\"
+        bash \"${script}\"
+    " || {
         echo "    [WARN] ${script_name} had issues (continuing)"
         return 0
     }
@@ -266,13 +278,14 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
             08-gtk.sh)
                 # gsettings requires dbus - deferred to first-boot
                 echo "    [B] ${module_name} (gsettings deferred to first-boot)"
-                su - "${TARGET_USER}" -c "
-                    source ${CONFIG_ENV_FILE} 2>/dev/null || true
-                    cd ${HYPRFLUX_DIR}
+                su - "${TARGET_USER}" -s /bin/bash -c "
+                    export HOME=\"${TARGET_HOME}\"
+                    source \"${CONFIG_ENV_FILE}\" 2>/dev/null || true
+                    cd \"${HYPRFLUX_DIR}\" 2>/dev/null || true
                     source lib/common.sh 2>/dev/null || true
                     source lib/packages.sh 2>/dev/null || true
                     source lib/git.sh 2>/dev/null || true
-                    source ${module}
+                    source \"${module}\"
                 " 2>/dev/null || true
                 ;;
             17-optional-packages.sh)
@@ -281,13 +294,14 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
                 ;;
             *)
                 echo "    [B] ${module_name}..."
-                su - "${TARGET_USER}" -c "
-                    source ${CONFIG_ENV_FILE} 2>/dev/null || true
-                    cd ${HYPRFLUX_DIR}
+                su - "${TARGET_USER}" -s /bin/bash -c "
+                    export HOME=\"${TARGET_HOME}\"
+                    source \"${CONFIG_ENV_FILE}\" 2>/dev/null || true
+                    cd \"${HYPRFLUX_DIR}\" 2>/dev/null || true
                     source lib/common.sh 2>/dev/null || true
                     source lib/packages.sh 2>/dev/null || true
                     source lib/git.sh 2>/dev/null || true
-                    source ${module}
+                    source \"${module}\"
                 " 2>/dev/null || {
                     echo "    [WARN] ${module_name} had issues (continuing)"
                 }
@@ -308,16 +322,41 @@ echo "    Phase B complete."
 echo ""
 echo "==> Phase C: Enabling system services"
 
-# Restore real systemctl
+# Restore real systemctl BEFORE trying to use it
 if [[ -f /usr/bin/systemctl.real ]]; then
     cp /usr/bin/systemctl.real /usr/bin/systemctl
     rm -f /usr/bin/systemctl.real
+    echo "    Real systemctl restored."
+fi
+
+# Now that zsh has been installed by Phase A, switch user shell to zsh
+if command -v zsh &>/dev/null; then
+    usermod -s "$(command -v zsh)" "${TARGET_USER}" 2>/dev/null \
+        && echo "    Shell set to zsh for ${TARGET_USER}." \
+        || echo "    [WARN] Could not set zsh shell (non-fatal)"
+fi
+
+# Ensure sddm is installed -- check for the systemd service unit file,
+# not the binary (which may not be in PATH even when installed).
+if [[ ! -f /usr/lib/systemd/system/sddm.service ]]; then
+    echo "    [WARN] sddm service not found -- installing now as fallback..."
+    pacman -S --noconfirm --needed sddm 2>/dev/null \
+        && echo "    sddm installed." \
+        || echo "    [WARN] Could not install sddm via pacman"
 fi
 
 # Enable display manager and core services
-systemctl enable sddm 2>/dev/null || echo "    [WARN] Could not enable sddm"
-systemctl enable bluetooth 2>/dev/null || echo "    [WARN] Could not enable bluetooth"
-systemctl enable NetworkManager 2>/dev/null || true  # Already enabled in Phase 4
+/usr/bin/systemctl enable sddm 2>/dev/null \
+    && echo "    sddm enabled." \
+    || echo "    [WARN] Could not enable sddm"
+
+/usr/bin/systemctl enable bluetooth 2>/dev/null \
+    && echo "    bluetooth enabled." \
+    || echo "    [WARN] Could not enable bluetooth (non-fatal)"
+
+/usr/bin/systemctl enable NetworkManager 2>/dev/null \
+    && echo "    NetworkManager enabled." \
+    || true  # Already enabled in Step 9 -- not critical here
 
 echo "    Services enabled."
 

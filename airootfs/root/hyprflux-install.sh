@@ -738,6 +738,8 @@ EOF
     log_ok "Root password set"
 
     log_step "Creating user '${INSTALL_USERNAME}'..."
+    # Use /bin/bash here -- zsh is not installed yet at this stage.
+    # The chroot wrapper will run usermod to switch to zsh after zsh is installed.
     arch-chroot "$MOUNT_POINT" useradd -m -G wheel -s /bin/bash "${INSTALL_USERNAME}"
     echo "${INSTALL_USERNAME}:${INSTALL_PASSWORD}" | arch-chroot "$MOUNT_POINT" chpasswd
     log_ok "User ${INSTALL_USERNAME} created"
@@ -779,21 +781,26 @@ step_install_hyprflux() {
     # ====== Prepare chroot environment ======
 
     # DNS resolution in chroot
+    # Use --remove-destination because /etc/resolv.conf on the live ISO is a
+    # systemd-resolved symlink; copying over a symlink requires this flag.
     log_step "Configuring DNS for chroot..."
-    cp /etc/resolv.conf "${MOUNT_POINT}/etc/resolv.conf"
+    cp --remove-destination /etc/resolv.conf "${MOUNT_POINT}/etc/resolv.conf"
 
     # ====== Clone repos as target user ======
+    # Use 'su - USER' (login shell) so HOME is correctly set to /home/USER,
+    # not /root. The -c command is double-quoted so the tilde expands in the
+    # context of the target user's shell.
     log_step "Cloning HyprFlux repository..."
     set +e
     arch-chroot "$MOUNT_POINT" su - "${INSTALL_USERNAME}" -c \
-        "git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git ~/HyprFlux" \
+        'git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git "$HOME/HyprFlux"' \
         2>&1 | while IFS= read -r line; do log_cmd "$line"; done
     set -e
 
     log_step "Cloning Arch-Hyprland repository..."
     set +e
     arch-chroot "$MOUNT_POINT" su - "${INSTALL_USERNAME}" -c \
-        "git clone --depth=1 https://github.com/ahmad9059/Arch-Hyprland.git ~/Arch-Hyprland" \
+        'git clone --depth=1 https://github.com/ahmad9059/Arch-Hyprland.git "$HOME/Arch-Hyprland"' \
         2>&1 | while IFS= read -r line; do log_cmd "$line"; done
     set -e
 
