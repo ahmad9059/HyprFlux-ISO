@@ -21,7 +21,7 @@ OUT_DIR="${SCRIPT_DIR}/out"
 # Defaults
 BOOT_MODE="uefi"
 ISO_FILE=""
-RAM="4G"
+RAM="8G"
 CPUS="4"
 DISPLAY_OPT="-display gtk,gl=on"
 DISK_IMAGE="/mnt/vmachines/images/hyprflux-test-disk.qcow2"
@@ -130,9 +130,9 @@ QEMU_CMD+=(
 )
 
 # Always recreate the test disk for a fresh install
-echo "Creating fresh 30G test disk..."
+echo "Creating fresh 40G test disk..."
 rm -f "${DISK_IMAGE}"
-qemu-img create -f qcow2 "${DISK_IMAGE}" 30G
+qemu-img create -f qcow2 "${DISK_IMAGE}" 40G
 
 echo "Launching QEMU..."
 exec "${QEMU_CMD[@]}"

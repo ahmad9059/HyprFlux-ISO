@@ -31,6 +31,37 @@ echo "============================================"
 echo ""
 
 # ============================================================================
+# PRE-FLIGHT CHECKS
+# ============================================================================
+
+echo "==> Pre-flight checks..."
+
+# Check filesystem is writable
+if ! touch /tmp/.write_test 2>/dev/null; then
+    echo "    [ERROR] Filesystem is read-only! Cannot continue."
+    exit 1
+fi
+rm -f /tmp/.write_test
+
+# Check available disk space (need at least 5GB free)
+AVAILABLE_KB=$(df / | tail -1 | awk '{print $4}')
+AVAILABLE_GB=$((AVAILABLE_KB / 1024 / 1024))
+if [[ $AVAILABLE_GB -lt 5 ]]; then
+    echo "    [WARN] Low disk space: ${AVAILABLE_GB}GB free (recommend 5GB+)"
+else
+    echo "    Disk space OK: ${AVAILABLE_GB}GB free"
+fi
+
+# Check internet connectivity
+if ! curl -s --max-time 5 https://archlinux.org >/dev/null 2>&1; then
+    echo "    [WARN] Internet connectivity check failed"
+else
+    echo "    Internet connectivity OK"
+fi
+
+echo ""
+
+# ============================================================================
 # PHASE 0: Install shims and prepare environment
 # ============================================================================
 
@@ -166,6 +197,10 @@ run_as_user() {
     }
 }
 
+# Ensure Install-Logs directory exists and is writable
+mkdir -p "${ARCH_HYPR_DIR}/Install-Logs"
+chown -R "${TARGET_USER}:${TARGET_USER}" "${ARCH_HYPR_DIR}/Install-Logs"
+
 # A1: Base packages
 echo "[A1] Installing base packages..."
 run_as_user "${INSTALL_SCRIPTS}/00-base.sh"
@@ -185,14 +220,34 @@ if ! command -v yay &>/dev/null && ! su - "${TARGET_USER}" -s /bin/bash -c "comm
     pacman -S --noconfirm yay-bin 2>/dev/null || true
 fi
 
-if command -v yay &>/dev/null || su - "${TARGET_USER}" -s /bin/bash -c "command -v yay" &>/dev/null; then
-    echo "    yay is available."
+# Ensure yay is in the user's PATH by creating a symlink if needed
+if [[ -f /usr/bin/yay ]] && [[ ! -L /usr/local/bin/yay ]]; then
+    ln -sf /usr/bin/yay /usr/local/bin/yay 2>/dev/null || true
+fi
+
+# Export yay path for scripts that source Global_functions.sh
+export YAY_PATH=$(command -v yay || su - "${TARGET_USER}" -s /bin/bash -c "command -v yay" 2>/dev/null || echo "")
+if [[ -n "$YAY_PATH" ]]; then
+    echo "    yay is available at: $YAY_PATH"
+    # Create wrapper to ensure yay is always found
+    cat > /usr/local/bin/yay-iso << YAY_EOF
+#!/bin/bash
+exec "$YAY_PATH" "\$@"
+YAY_EOF
+    chmod +x /usr/local/bin/yay-iso
 else
     echo "    [WARN] yay installation may have failed. AUR packages will not install."
 fi
 
 # A4: Hyprland packages
 echo "[A4] Installing Hyprland ecosystem packages..."
+# Patch Global_functions.sh to ensure ISAUR is set correctly for chroot
+if [[ -f "${INSTALL_SCRIPTS}/Global_functions.sh" ]]; then
+    # Backup original
+    cp "${INSTALL_SCRIPTS}/Global_functions.sh" "${INSTALL_SCRIPTS}/Global_functions.sh.bak"
+    # Replace the ISAUR line to use a fallback
+    sed -i 's/^ISAUR=$(command -v yay || command -v paru)/ISAUR=$(command -v yay || command -v paru || echo "\/usr\/bin\/yay")/' "${INSTALL_SCRIPTS}/Global_functions.sh"
+fi
 run_as_user "${INSTALL_SCRIPTS}/01-hypr-pkgs.sh"
 
 # A5: PipeWire audio
@@ -465,7 +520,16 @@ rm -f /usr/local/bin/systemctl-shim
 rm -f /usr/local/bin/chsh
 rm -f /usr/local/bin/gsettings
 rm -f /usr/local/bin/nwg-look
+rm -f /usr/local/bin/yay-iso
 rm -f "${CONFIG_ENV_FILE}"
+
+# Restore original Global_functions.sh if backed up
+if [[ -f "${INSTALL_SCRIPTS}/Global_functions.sh.bak" ]]; then
+    mv "${INSTALL_SCRIPTS}/Global_functions.sh.bak" "${INSTALL_SCRIPTS}/Global_functions.sh"
+fi
+
+# Clean up any install logs in the target user's home
+rm -rf "${TARGET_HOME}/Arch-Hyprland/Install-Logs" 2>/dev/null || true
 
 echo "    Cleanup complete."
 
