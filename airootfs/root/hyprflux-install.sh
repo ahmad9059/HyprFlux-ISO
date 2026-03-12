@@ -637,6 +637,9 @@ step_base_install() {
         sudo vim nano git zsh
         base-devel
         amd-ucode intel-ucode
+        libnewt            # whiptail for dialogs
+        pciutils           # lspci for GPU detection
+        curl wget          # for downloading scripts
     )
 
     # Retry logic for pacstrap
@@ -773,105 +776,153 @@ EOF
 }
 
 # ============================================================================
-# Step 10: Prepare HyprFlux post-reboot installation
+# Step 10: Install HyprFlux inside chroot using the chroot wrapper
 # ============================================================================
-# Strategy: rather than running the HyprFlux install inside arch-chroot
-# (which has no systemd, no dbus, no PCI bus), we:
-#   1. Clone the HyprFlux repo into the user's home directory
-#   2. Set up auto-login for the user on tty1 (no password prompt)
-#   3. Set up ~/.bash_profile to auto-run ~/HyprFlux/install.sh on first login
-#   4. The auto-login and profile hook self-remove after the first run
-#
-# This means: reboot → auto-login as user → HyprFlux install.sh runs
-# automatically in a real running system with full systemd/dbus available.
+# The chroot wrapper handles all Arch-Hyprland and HyprFlux installation
+# inside the chroot environment with proper shims for chroot limitations.
+# This avoids the interactive whiptail dialogs that would fail in first-boot.
 # ============================================================================
 step_install_hyprflux() {
-    set_status "Preparing HyprFlux post-reboot installer..."
+    set_status "Installing HyprFlux Desktop..."
 
     local user_home="${MOUNT_POINT}/home/${INSTALL_USERNAME}"
 
     # ====== DNS for chroot git operations ======
-    log_step "Configuring DNS..."
+    log_step "Configuring DNS for chroot..."
     cp --remove-destination /etc/resolv.conf "${MOUNT_POINT}/etc/resolv.conf"
 
-    # ====== Clone HyprFlux repo directly as root on the host ======
-    # We clone into the mounted filesystem and then fix ownership.
-    # This avoids the su-inside-arch-chroot HOME resolution problems.
+    # ====== Clone Arch-Hyprland repo ======
+    log_step "Cloning Arch-Hyprland repository..."
+    local arch_hypr_dir="${user_home}/Arch-Hyprland"
+    if [[ -d "${arch_hypr_dir}" ]]; then
+        log_warn "Arch-Hyprland directory already exists, removing old clone..."
+        rm -rf "${arch_hypr_dir}"
+    fi
+    
+    set +e
+    git clone --depth=1 https://github.com/ahmad9059/Arch-Hyprland.git \
+        "${arch_hypr_dir}" \
+        2>&1 | while IFS= read -r line; do log_cmd "$line"; done
+    local git_status=${PIPESTATUS[0]}
+    set -e
+    
+    if [[ $git_status -ne 0 ]]; then
+        die "Failed to clone Arch-Hyprland repository. Check internet connection."
+    fi
+    log_ok "Arch-Hyprland repository cloned."
+
+    # ====== Clone HyprFlux repo ======
     log_step "Cloning HyprFlux repository..."
     if [[ -d "${user_home}/HyprFlux" ]]; then
-        log_warn "HyprFlux directory already exists, skipping clone."
-    else
-        set +e
-        git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git \
-            "${user_home}/HyprFlux" \
-            2>&1 | while IFS= read -r line; do log_cmd "$line"; done
-        local git_status=${PIPESTATUS[0]}
-        set -e
-        if [[ $git_status -ne 0 ]]; then
-            log_warn "HyprFlux clone failed -- will retry on first boot via install.sh"
-        else
-            log_ok "HyprFlux repository cloned."
-        fi
+        log_warn "HyprFlux directory already exists, removing old clone..."
+        rm -rf "${user_home}/HyprFlux"
     fi
+    
+    set +e
+    git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git \
+        "${user_home}/HyprFlux" \
+        2>&1 | while IFS= read -r line; do log_cmd "$line"; done
+    git_status=${PIPESTATUS[0]}
+    set -e
+    
+    if [[ $git_status -ne 0 ]]; then
+        die "Failed to clone HyprFlux repository. Check internet connection."
+    fi
+    log_ok "HyprFlux repository cloned."
 
-    # Fix ownership so the user owns the repo
+    # ====== Copy chroot wrapper into target system ======
+    log_step "Installing chroot wrapper..."
+    cp "${SCRIPT_DIR}/lib/hyprflux-chroot-wrapper.sh" "${MOUNT_POINT}/tmp/"
+    chmod +x "${MOUNT_POINT}/tmp/hyprflux-chroot-wrapper.sh"
+    log_ok "Chroot wrapper installed."
+
+    # ====== Fix ownership of repos (must be done as root before chroot) ======
+    log_step "Setting up permissions..."
     arch-chroot "$MOUNT_POINT" chown -R \
         "${INSTALL_USERNAME}:${INSTALL_USERNAME}" \
-        "/home/${INSTALL_USERNAME}/HyprFlux" 2>/dev/null || true
+        "/home/${INSTALL_USERNAME}" 2>/dev/null || true
+    log_ok "Permissions set."
 
-    # ====== Write a self-removing first-boot launcher into ~/.bash_profile ======
-    # After reboot, user logs in normally (username + password).
-    # The .bash_profile hook immediately runs HyprFlux install.sh, then removes itself.
-    log_step "Writing first-boot HyprFlux launcher..."
+    # ====== Run chroot wrapper inside arch-chroot ======
+    log_step "Running HyprFlux installation inside chroot..."
+    log_info "This will take 20-60 minutes. Installing packages and configuring desktop..."
+    log_info "NVIDIA detected: ${INSTALL_HAS_NVIDIA}"
+    echo ""
+
+    # Run the wrapper with target user and nvidia flag
+    # Disable errexit temporarily so we can catch and report errors
+    set +e
+    arch-chroot "$MOUNT_POINT" /bin/bash /tmp/hyprflux-chroot-wrapper.sh \
+        "$INSTALL_USERNAME" "$INSTALL_HAS_NVIDIA" \
+        2>&1 | while IFS= read -r line; do
+            # Filter shim messages to avoid clutter
+            if [[ "$line" != *"[shim]"* ]]; then
+                log_cmd "$line"
+            fi
+        done
+    local wrapper_status=${PIPESTATUS[0]}
+    set -e
+
+    if [[ $wrapper_status -ne 0 ]]; then
+        log_warn "Chroot wrapper exited with status $wrapper_status"
+        log_warn "Some components may not have installed correctly."
+        log_info "The system should still boot. You can manually install remaining packages after login."
+    else
+        log_ok "HyprFlux installation completed inside chroot."
+    fi
+
+    # ====== Create a minimal first-boot script for any deferred operations ======
+    log_step "Setting up first-boot adjustments..."
     cat > "${user_home}/.hyprflux-firstboot.sh" << 'FIRSTBOOT_EOF'
 #!/bin/bash
-# HyprFlux first-boot launcher
-# Auto-runs HyprFlux install on first tty1 login, then self-removes.
+# HyprFlux first-boot adjustments
+# Applies settings that couldn't be set in chroot (requires running desktop)
 
-MARKER="$HOME/.hyprflux-installed"
+MARKER="$HOME/.config/hyprflux-first-boot-done"
 
 # Only run once
 [[ -f "$MARKER" ]] && return 0
 
 echo ""
-echo "=========================================="
-echo "  HyprFlux Desktop Installer"
-echo "=========================================="
+echo "  Applying HyprFlux first-boot settings..."
 echo ""
-echo "  Starting HyprFlux installation..."
-echo "  This will take 20-60 minutes."
-echo ""
-sleep 2
 
-# Clone repo if it wasn't cloned during ISO install
-if [[ ! -d "$HOME/HyprFlux" ]]; then
-    echo "  Cloning HyprFlux repository..."
-    git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git "$HOME/HyprFlux"
+# Apply GTK theme via gsettings (requires dbus/desktop)
+if command -v gsettings &>/dev/null; then
+    gsettings set org.gnome.desktop.interface gtk-theme "HyprFlux-Compact" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface cursor-theme "Bibata-Modern-Classic" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface cursor-size 24 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface font-name "Noto Sans 11" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface color-scheme "prefer-dark" 2>/dev/null || true
 fi
 
-# Run the HyprFlux installer
-if [[ -f "$HOME/HyprFlux/install.sh" ]]; then
-    bash "$HOME/HyprFlux/install.sh"
-    touch "$MARKER"
-else
-    echo "  ERROR: $HOME/HyprFlux/install.sh not found!"
-    echo "  Please run: git clone https://github.com/ahmad9059/HyprFlux.git"
-    echo "  Then: bash ~/HyprFlux/install.sh"
+# Apply nwg-look if available
+if command -v nwg-look &>/dev/null; then
+    nwg-look -a 2>/dev/null || true
 fi
 
-# Self-remove this launcher from .bash_profile
+# Enable pipewire user services
+systemctl --user enable --now pipewire.socket 2>/dev/null || true
+systemctl --user enable --now pipewire-pulse.socket 2>/dev/null || true
+systemctl --user enable --now wireplumber.service 2>/dev/null || true
+
+# Mark as done
+mkdir -p "$(dirname "$MARKER")"
+touch "$MARKER"
+
+# Self-remove from .bash_profile
 sed -i '/hyprflux-firstboot/d' "$HOME/.bash_profile" 2>/dev/null || true
-sed -i '/hyprflux-firstboot/d' "$HOME/.bashrc" 2>/dev/null || true
 FIRSTBOOT_EOF
     chmod +x "${user_home}/.hyprflux-firstboot.sh"
 
-    # Hook into .bash_profile (runs on login shell = tty login)
+    # Hook into .bash_profile for first-boot adjustments only
     cat > "${user_home}/.bash_profile" << 'PROFILE_EOF'
 # Load .bashrc if it exists
 [[ -f "$HOME/.bashrc" ]] && source "$HOME/.bashrc"
 
-# HyprFlux first-boot installer (self-removes after first run)
-if [[ -f "$HOME/.hyprflux-firstboot.sh" && ! -f "$HOME/.hyprflux-installed" ]]; then
+# HyprFlux first-boot adjustments (self-removes after first run)
+if [[ -f "$HOME/.hyprflux-firstboot.sh" && ! -f "$HOME/.config/hyprflux-first-boot-done" ]]; then
     source "$HOME/.hyprflux-firstboot.sh"
 fi
 PROFILE_EOF
@@ -882,8 +933,8 @@ PROFILE_EOF
         "/home/${INSTALL_USERNAME}/.bash_profile" \
         "/home/${INSTALL_USERNAME}/.hyprflux-firstboot.sh" 2>/dev/null || true
 
-    log_ok "First-boot HyprFlux launcher installed."
-    log_ok "On reboot: login as '${INSTALL_USERNAME}' → HyprFlux install starts automatically."
+    log_ok "First-boot adjustments configured."
+    log_ok "HyprFlux desktop installation complete!"
 }
 
 # ============================================================================
@@ -893,7 +944,7 @@ step_cleanup_reboot() {
     set_status "Installation Complete!"
 
     echo ""
-    log_ok "Base Arch Linux system installed. HyprFlux will install on first boot."
+    log_ok "HyprFlux desktop system installed successfully!"
     echo ""
 
     # Sync filesystem
@@ -901,20 +952,20 @@ step_cleanup_reboot() {
 
     # Show completion message
     echo ""
-    echo -e "  ${GREEN}Base Arch Linux Installation Complete!${RESET}"
+    echo -e "  ${GREEN}╔════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "  ${GREEN}║        HyprFlux Installation Complete!                 ║${RESET}"
+    echo -e "  ${GREEN}╚════════════════════════════════════════════════════════╝${RESET}"
     echo ""
-    echo "  The base system has been installed and configured."
+    echo "  The HyprFlux desktop has been installed and configured."
     echo ""
     echo "  Please:"
     echo "    1. Remove the USB drive / ISO"
     echo "    2. Press Enter to reboot"
     echo ""
-    echo -e "  ${YELLOW}After reboot (Phase 2 -- HyprFlux install):${RESET}"
+    echo -e "  ${YELLOW}After reboot:${RESET}"
     echo "    - Login with username: ${INSTALL_USERNAME}"
-    echo "    - Enter your password"
-    echo "    - HyprFlux installer starts automatically"
-    echo "    - This takes 20-60 minutes (downloads packages)"
-    echo "    - Do NOT interrupt -- let it complete"
+    echo "    - HyprFlux desktop will start automatically"
+    echo "    - First-boot adjustments will apply (GTK theme, pipewire)"
     echo ""
     echo -ne "  ${DIM}Press Enter to reboot...${RESET}"
     read -r < /dev/tty

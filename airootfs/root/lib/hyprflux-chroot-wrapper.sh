@@ -157,6 +157,7 @@ run_as_user() {
     echo "    Running ${script_name}..."
     su - "${TARGET_USER}" -s /bin/bash -c "
         export HOME=\"${TARGET_HOME}\"
+        export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin\"
         cd \"${ARCH_HYPR_DIR}\" 2>/dev/null || cd \"\$HOME\"
         bash \"${script}\"
     " || {
@@ -176,6 +177,19 @@ run_as_user "${INSTALL_SCRIPTS}/pacman.sh"
 # A3: Install yay (AUR helper)
 echo "[A3] Installing yay AUR helper..."
 run_as_user "${INSTALL_SCRIPTS}/yay.sh"
+
+# Verify yay was installed and is in PATH
+if ! command -v yay &>/dev/null && ! su - "${TARGET_USER}" -s /bin/bash -c "command -v yay" &>/dev/null; then
+    echo "    [WARN] yay not found in PATH after installation, trying to install again..."
+    # Try installing yay manually as fallback
+    pacman -S --noconfirm yay-bin 2>/dev/null || true
+fi
+
+if command -v yay &>/dev/null || su - "${TARGET_USER}" -s /bin/bash -c "command -v yay" &>/dev/null; then
+    echo "    yay is available."
+else
+    echo "    [WARN] yay installation may have failed. AUR packages will not install."
+fi
 
 # A4: Hyprland packages
 echo "[A4] Installing Hyprland ecosystem packages..."
