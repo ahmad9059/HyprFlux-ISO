@@ -1,19 +1,1 @@
 
-===================================================
-      HyprFlux -- Arch Linux Installer
-===================================================
-
-  The installer starts automatically on tty1.
-
-  If you need a shell for debugging:
-    - Press Ctrl+Alt+F2 for tty2
-    - Login as root (no password)
-
-  To manually start the installer:
-    bash ~/hyprflux-install.sh
-
-  Network: nmcli / nmtui
-  Docs: https://github.com/ahmad9059/HyprFlux
-
-===================================================
-
