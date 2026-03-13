@@ -271,53 +271,59 @@ start_progress() {
     _build_banner_cache
   fi
 
-  # Cursor is already hidden from show_banner, ensure it stays hidden
+  # Hide cursor, clear screen once, draw banner once.
+  # The background loop then updates only the status + log region in-place.
   printf '%s' "${ANSI_HIDE_CURSOR}"
+  printf '%s' "${ANSI_CLEAR_SCREEN}"
+  printf '%s' "$_BANNER_CACHE"
 
-  # Start background redraw loop
+  # Start background in-place update loop
   _progress_loop &
   _PROGRESS_PID=$!
   disown "$_PROGRESS_PID" 2>/dev/null || true
 }
 
 _progress_loop() {
-  local max_lines
-  # Reserve lines for: banner(~11) + status(2) + padding(2) = ~15 lines overhead
-  max_lines=$(( TERM_HEIGHT - 15 ))
-  (( max_lines < 5 )) && max_lines=5
+  # --- Layout constants ---
+  # Banner: 1 blank + 6 logo + 1 separator + 1 welcome + 1 blank = 10 lines
+  # Status: row 11, blank: row 12, log starts: row 13
+  local log_start_row=13
+  local max_lines=$(( TERM_HEIGHT - log_start_row ))
+  (( max_lines < 3 )) && max_lines=3
   (( max_lines > 25 )) && max_lines=25
 
-  # Available width for the log text itself:
-  #   total line = PAD + "  → " + text + RESET
-  #   PAD = PADDING_LEFT chars, "  → " = 4 chars, leave 2 char margin
-  local max_w=$(( TERM_WIDTH - PADDING_LEFT - 6 ))
+  # Max width for log text after prefix
+  # Full line = PAD(PADDING_LEFT) + "  > "(4 chars) + text + RESET
+  # Leave 2-char right margin to avoid wrapping
+  local max_w=$(( TERM_WIDTH - PADDING_LEFT - 4 - 2 ))
   (( max_w < 20 )) && max_w=20
 
-  # Spinner frames -- simple ASCII to avoid UTF-8 issues in early console
+  # ANSI: erase from cursor to end of line
+  local erase_eol=$'\033[K'
+
+  # Spinner frames
   local -a spin=('/' '-' '\' '|')
   local spin_idx=0
 
+  # Banner is already drawn by start_progress. Loop only updates status + log.
   while true; do
-    # Clear screen and print banner (cursor already hidden)
-    printf '%s' "${ANSI_CLEAR_SCREEN}"
-    printf '%s' "$_BANNER_CACHE"
-
-    # Status line with spinner
+    # --- Update status line (row 11) ---
+    printf '\033[11;1H%s' "$erase_eol"
     local frame="${spin[$spin_idx]}"
     spin_idx=$(( (spin_idx + 1) % ${#spin[@]} ))
-    printf '%s%s[%s] %s%s\n\n' "$PAD" "${STATUS_COLOR}" "$frame" "$_PROGRESS_STATUS" "${RESET}"
+    printf '%s%s[%s] %s%s' "$PAD" "${STATUS_COLOR}" "$frame" "$_PROGRESS_STATUS" "${RESET}"
 
-    # Last N lines of log
+    # --- Update log region (rows 13..13+max_lines) ---
+    printf '\033[%d;1H' "$log_start_row"
+
+    local lines_printed=0
+
     if [[ -f "$PROGRESS_LOG" ]]; then
-      local raw_lines
-      raw_lines=$(tail -n "$max_lines" "$PROGRESS_LOG" 2>/dev/null) || raw_lines=""
-      if [[ -n "$raw_lines" ]]; then
+      local raw
+      raw=$(tail -n "$max_lines" "$PROGRESS_LOG" 2>/dev/null) || raw=""
+      if [[ -n "$raw" ]]; then
         while IFS= read -r line; do
-          # Strip ALL ANSI escape sequences and carriage returns.
-          # Use tr to delete \r, then sed with a character class to match ESC[...X
-          # The ESC byte is \033 (octal).  We match ESC followed by [ or ( then
-          # any number of parameter bytes (0-9 ; ? space) then a letter.
-          # Using separate commands avoids sed BRE escaping pitfalls.
+          # Strip ANSI escapes and carriage returns
           local clean
           clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b([0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
           # Skip empty/whitespace-only lines
@@ -326,10 +332,20 @@ _progress_loop() {
           if (( ${#clean} > max_w )); then
             clean="${clean:0:$(( max_w - 1 ))}~"
           fi
-          printf '%s%s  > %s%s\n' "$PAD" "${GRAY}" "$clean" "${RESET}"
-        done <<< "$raw_lines"
+          # Erase line, print padded content
+          printf '%s%s%s  > %s%s\n' "$erase_eol" "$PAD" "${GRAY}" "$clean" "${RESET}"
+          lines_printed=$(( lines_printed + 1 ))
+          (( lines_printed >= max_lines )) && break
+        done <<< "$raw"
       fi
     fi
+
+    # Erase any stale lines below the log content
+    local remaining=$(( max_lines - lines_printed ))
+    local i
+    for (( i = 0; i < remaining; i++ )); do
+      printf '%s\n' "$erase_eol"
+    done
 
     sleep 0.5
   done
