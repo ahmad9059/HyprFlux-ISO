@@ -15,33 +15,56 @@ _COMMON_SH_LOADED=1
 # ============================================================================
 MOUNT_POINT="/mnt/archinstall"
 
-# Installer variables (set during config prompts in Phase 4)
-INSTALL_TIMEZONE=""
-INSTALL_LOCALE=""
-INSTALL_KEYBOARD=""
-INSTALL_HOSTNAME=""
-INSTALL_USERNAME=""
-INSTALL_PASSWORD=""
-INSTALL_DISK=""
-INSTALL_BOOT_MODE=""
-INSTALL_PARTITION_MODE=""    # "auto" or "manual"
-INSTALL_HAS_NVIDIA="no"
+# Installer variables -- defaults only if not already set by the main script.
+# The main installer (hyprflux-install.sh) declares these with proper defaults.
+: "${INSTALL_TIMEZONE:=}"
+: "${INSTALL_LOCALE:=en_US.UTF-8}"
+: "${INSTALL_KEYMAP:=us}"
+: "${INSTALL_HOSTNAME:=hyprflux}"
+: "${INSTALL_USERNAME:=}"
+: "${INSTALL_PASSWORD:=}"
+: "${INSTALL_DISK:=}"
+: "${INSTALL_BOOT_MODE:=}"
+: "${INSTALL_HAS_NVIDIA:=no}"
 
 # ============================================================================
 # Error Handling
 # ============================================================================
 
-# Fatal error -- log, reset terminal, drop to shell for debugging
+# Fatal error -- log, clean up, reset terminal, drop to shell for debugging
 die() {
-    echo ""
+    # Stop any running progress display FIRST (before logging)
+    if [[ -n "${_PROGRESS_PID:-}" ]]; then
+        kill "$_PROGRESS_PID" 2>/dev/null || true
+        wait "$_PROGRESS_PID" 2>/dev/null || true
+        _PROGRESS_PID=""
+    fi
+    if [[ -n "${PROGRESS_LOG:-}" && -f "${PROGRESS_LOG:-}" ]]; then
+        rm -f "$PROGRESS_LOG" 2>/dev/null || true
+    fi
+    PROGRESS_LOG=""
+    _PROGRESS_STATUS=""
+
+    # Reset terminal: show cursor, clear attributes
+    printf '%s' "${ANSI_SHOW_CURSOR:-$'\033[?25h'}"
+    tput sgr0 2>/dev/null || true
+
+    # Clear screen and show banner if available
+    if [[ -n "${_BANNER_CACHE:-}" ]]; then
+        printf '%s' "${ANSI_CLEAR_SCREEN:-$'\033[H\033[2J'}"
+        printf '%s' "$_BANNER_CACHE"
+    fi
+
+    printf '\n'
     log_error "$@"
-    echo ""
+    printf '\n'
     log_error "Installation failed. Dropping to shell for debugging."
     log_error "To re-run: bash ~/hyprflux-install.sh"
-    echo ""
-    # Reset terminal attributes
-    tput sgr0 2>/dev/null || true
-    exec /bin/bash
+    printf '\n'
+
+    # Drop to a subshell (not exec) so EXIT traps can still fire
+    bash || true
+    exit 1
 }
 
 # ============================================================================
@@ -147,12 +170,13 @@ list_disks() {
 # Use reflector to get fast mirrors (run in live env before pacstrap)
 setup_mirrors() {
     log_step "Updating mirror list with reflector..."
-    reflector \
+    timeout 120 reflector \
         --latest 20 \
         --protocol https \
         --sort rate \
+        --download-timeout 5 \
         --save /etc/pacman.d/mirrorlist 2>&1 | while IFS= read -r line; do
             log_cmd "$line"
-        done
+        done || log_warn "Reflector failed or timed out"
     log_ok "Mirror list updated"
 }

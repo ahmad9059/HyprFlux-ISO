@@ -13,8 +13,14 @@ if [[ "$(tty)" == "/dev/tty1" ]]; then
     # Launch installer -- if it exits (Ctrl+C or error), user gets a shell
     bash ~/hyprflux-install.sh || true
 
-    echo ""
-    echo "  Installer exited. You are now in a root shell."
-    echo "  To re-run: bash ~/hyprflux-install.sh"
-    echo ""
+    # Center exit message to match the TUI layout
+    _tw=$(stty size 2>/dev/null </dev/tty | awk '{print $2}')
+    : "${_tw:=120}"
+    _pad=$(printf "%*s" "$(( (_tw - 66) / 2 ))" "")
+
+    printf '\n'
+    printf '%s\033[?25h' ''  # Show cursor
+    printf '%s%s\n' "$_pad" "Installer exited. You are now in a root shell."
+    printf '%s%s\n' "$_pad" "To re-run: bash ~/hyprflux-install.sh"
+    printf '\n'
 fi
