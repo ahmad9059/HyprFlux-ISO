@@ -427,6 +427,11 @@ fi
     && echo "    NetworkManager enabled." \
     || true  # Already enabled in Step 9 -- not critical here
 
+# Set graphical target as default (needed for SDDM to auto-start)
+/usr/bin/systemctl set-default graphical.target 2>/dev/null \
+    && echo "    Default target set to graphical." \
+    || echo "    [WARN] Could not set graphical target"
+
 echo "    Services enabled."
 
 # ============================================================================
