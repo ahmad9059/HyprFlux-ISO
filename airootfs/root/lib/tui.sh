@@ -284,66 +284,84 @@ start_progress() {
 }
 
 _progress_loop() {
-  # --- Layout constants ---
-  # Banner: 1 blank + 6 logo + 1 separator + 1 welcome + 1 blank = 10 lines
-  # Status: row 11, blank: row 12, log starts: row 13
+  # --- Layout ---
   local log_start_row=13
   local max_lines=$(( TERM_HEIGHT - log_start_row ))
   (( max_lines < 3 )) && max_lines=3
   (( max_lines > 25 )) && max_lines=25
 
-  # Max width for log text after prefix
-  # Full line = PAD(PADDING_LEFT) + "  > "(4 chars) + text + RESET
-  # Leave 2-char right margin to avoid wrapping
-  local max_w=$(( TERM_WIDTH - PADDING_LEFT - 4 - 2 ))
-  (( max_w < 20 )) && max_w=20
+  # Hard cap: log text is max 58 chars. With "  > " prefix (4 chars) = 62.
+  # Together with $PAD (centering), the total line stays within banner width.
+  local -i max_w=58
 
-  # ANSI: erase from cursor to end of line
   local erase_eol=$'\033[K'
-
-  # Spinner frames
   local -a spin=('/' '-' '\' '|')
   local spin_idx=0
 
-  # Banner is already drawn by start_progress. Loop only updates status + log.
   while true; do
-    # --- Update status line (row 11) ---
+    # --- Status line (row 11) ---
     printf '\033[11;1H%s' "$erase_eol"
     local frame="${spin[$spin_idx]}"
     spin_idx=$(( (spin_idx + 1) % ${#spin[@]} ))
     printf '%s%s[%s] %s%s' "$PAD" "${STATUS_COLOR}" "$frame" "$_PROGRESS_STATUS" "${RESET}"
 
-    # --- Update log region (rows 13..13+max_lines) ---
+    # --- Log region (rows 13+) ---
     printf '\033[%d;1H' "$log_start_row"
 
     local lines_printed=0
 
-    if [[ -f "$PROGRESS_LOG" ]]; then
-      local raw
-      raw=$(tail -n "$max_lines" "$PROGRESS_LOG" 2>/dev/null) || raw=""
-      if [[ -n "$raw" ]]; then
-        while IFS= read -r line; do
-          # Strip ANSI escapes and carriage returns
-          local clean
-          clean=$(printf '%s' "$line" | tr -d '\r' | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b([0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
-          # Skip empty/whitespace-only lines
-          [[ -z "${clean// /}" ]] && continue
-          # Hard truncate to max_w characters
-          if (( ${#clean} > max_w )); then
-            clean="${clean:0:$(( max_w - 1 ))}~"
+    if [[ -f "$PROGRESS_LOG" ]] && [[ -s "$PROGRESS_LOG" ]]; then
+      # Read last N lines into an array — no external commands in the loop
+      local -a log_arr=()
+      while IFS= read -r _l; do
+        log_arr+=("$_l")
+      done < <(tail -n "$max_lines" "$PROGRESS_LOG" 2>/dev/null)
+
+      local idx
+      for idx in "${!log_arr[@]}"; do
+        local raw_line="${log_arr[$idx]}"
+
+        # --- Strip ANSI sequences + \r using pure bash ---
+        # Remove \r
+        raw_line="${raw_line//$'\r'/}"
+        # Remove ESC[...X sequences (colors, cursor, etc.)
+        # Pattern: strip everything between ESC[ and the next letter
+        local stripped=""
+        local rest="$raw_line"
+        while [[ "$rest" =~ ^([^$'\033']*)([$'\033'])(.*)$ ]]; do
+          stripped+="${BASH_REMATCH[1]}"
+          rest="${BASH_REMATCH[3]}"
+          # Skip past the escape sequence: [ or ( then params then letter
+          if [[ "$rest" =~ ^[\[\(][0-9\;\?]*[a-zA-Z](.*)$ ]]; then
+            rest="${BASH_REMATCH[1]}"
+          elif [[ "$rest" =~ ^[=\>](.*)$ ]]; then
+            rest="${BASH_REMATCH[1]}"
+          else
+            # Unknown escape — skip just the ESC char, keep the rest
+            : # rest is already advanced past the ESC
           fi
-          # Erase line, print padded content
-          printf '%s%s%s  > %s%s\n' "$erase_eol" "$PAD" "${GRAY}" "$clean" "${RESET}"
-          lines_printed=$(( lines_printed + 1 ))
-          (( lines_printed >= max_lines )) && break
-        done <<< "$raw"
-      fi
+        done
+        stripped+="$rest"
+
+        # Skip blank lines
+        [[ -z "${stripped}" || -z "${stripped// /}" ]] && continue
+
+        # --- Truncate: pure bash, no external tools ---
+        if (( ${#stripped} > max_w )); then
+          stripped="${stripped:0:max_w}"
+        fi
+
+        # Print: erase line + padded output
+        printf '%s%s%s  > %s%s\n' "$erase_eol" "$PAD" "${GRAY}" "$stripped" "${RESET}"
+        lines_printed=$(( lines_printed + 1 ))
+        (( lines_printed >= max_lines )) && break
+      done
     fi
 
-    # Erase any stale lines below the log content
+    # Clear remaining stale lines
     local remaining=$(( max_lines - lines_printed ))
-    local i
-    for (( i = 0; i < remaining; i++ )); do
+    local j
+    for (( j = 0; j < remaining; j++ )); do
       printf '%s\n' "$erase_eol"
     done
 
