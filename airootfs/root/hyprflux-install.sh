@@ -254,40 +254,29 @@ step_locale() {
     show_banner
     set_status "Locale Configuration"
 
-    local locales=(
-        "af_ZA.UTF-8" "ar_AE.UTF-8" "ar_BH.UTF-8" "ar_DZ.UTF-8" "ar_EG.UTF-8"
-        "ar_IQ.UTF-8" "ar_JO.UTF-8" "ar_KW.UTF-8" "ar_LB.UTF-8" "ar_LY.UTF-8"
-        "ar_MA.UTF-8" "ar_OM.UTF-8" "ar_QA.UTF-8" "ar_SA.UTF-8" "ar_SD.UTF-8"
-        "ar_SY.UTF-8" "ar_TN.UTF-8" "ar_YE.UTF-8" "be_BY.UTF-8" "bg_BG.UTF-8"
-        "br_FR.UTF-8" "bs_BA.UTF-8" "ca_ES.UTF-8" "cs_CZ.UTF-8" "cy_GB.UTF-8"
-        "da_DK.UTF-8" "de_AT.UTF-8" "de_BE.UTF-8" "de_CH.UTF-8" "de_DE.UTF-8"
-        "de_LU.UTF-8" "el_GR.UTF-8" "en_AU.UTF-8" "en_CA.UTF-8" "en_GB.UTF-8"
-        "en_HK.UTF-8" "en_IE.UTF-8" "en_IN.UTF-8" "en_NZ.UTF-8" "en_PH.UTF-8"
-        "en_SG.UTF-8" "en_US.UTF-8" "en_ZA.UTF-8" "es_AR.UTF-8" "es_BO.UTF-8"
-        "es_CL.UTF-8" "es_CO.UTF-8" "es_CR.UTF-8" "es_DO.UTF-8" "es_EC.UTF-8"
-        "es_ES.UTF-8" "es_GT.UTF-8" "es_HN.UTF-8" "es_MX.UTF-8" "es_NI.UTF-8"
-        "es_PA.UTF-8" "es_PE.UTF-8" "es_PR.UTF-8" "es_PY.UTF-8" "es_SV.UTF-8"
-        "es_US.UTF-8" "es_UY.UTF-8" "es_VE.UTF-8" "et_EE.UTF-8" "eu_ES.UTF-8"
-        "fi_FI.UTF-8" "fo_FO.UTF-8" "fr_BE.UTF-8" "fr_CA.UTF-8" "fr_CH.UTF-8"
-        "fr_FR.UTF-8" "fr_LU.UTF-8" "ga_IE.UTF-8" "gd_GB.UTF-8" "gl_ES.UTF-8"
-        "gv_GB.UTF-8" "he_IL.UTF-8" "hi_IN.UTF-8" "hr_HR.UTF-8" "hsb_DE.UTF-8"
-        "hu_HU.UTF-8" "hy_AM.UTF-8" "id_ID.UTF-8" "is_IS.UTF-8" "it_CH.UTF-8"
-        "it_IT.UTF-8" "ja_JP.UTF-8" "ka_GE.UTF-8" "kk_KZ.UTF-8" "kl_GL.UTF-8"
-        "ko_KR.UTF-8" "ku_TR.UTF-8" "kw_GB.UTF-8" "lt_LT.UTF-8" "lv_LV.UTF-8"
-        "mg_MG.UTF-8" "mi_NZ.UTF-8" "mk_MK.UTF-8" "ml_IN.UTF-8" "mr_IN.UTF-8"
-        "ms_MY.UTF-8" "mt_MT.UTF-8" "nb_NO.UTF-8" "nl_BE.UTF-8" "nl_NL.UTF-8"
-        "nn_NO.UTF-8" "oc_FR.UTF-8" "om_ET.UTF-8" "pl_PL.UTF-8" "pt_BR.UTF-8"
-        "pt_PT.UTF-8" "ro_RO.UTF-8" "ru_RU.UTF-8" "ru_UA.UTF-8" "sk_SK.UTF-8"
-        "sl_SI.UTF-8" "so_DJ.UTF-8" "so_ET.UTF-8" "so_KE.UTF-8" "so_SO.UTF-8"
-        "sq_AL.UTF-8" "sq_MK.UTF-8" "st_ZA.UTF-8" "sv_FI.UTF-8" "sv_SE.UTF-8"
-        "ta_IN.UTF-8" "te_IN.UTF-8" "tg_TJ.UTF-8" "th_TH.UTF-8" "ti_ER.UTF-8"
-        "ti_ET.UTF-8" "tr_TR.UTF-8" "tt_RU.UTF-8" "uk_UA.UTF-8" "ur_IN.UTF-8"
-        "ur_PK.UTF-8" "uz_UZ.UTF-8" "vi_VN.UTF-8" "wa_BE.UTF-8" "xh_ZA.UTF-8"
-        "yi_US.UTF-8" "zh_CN.UTF-8" "zh_HK.UTF-8" "zh_SG.UTF-8" "zh_TW.UTF-8"
-        "zu_ZA.UTF-8"
-    )
+    # Build the locale list from /etc/locale.gen which is the authoritative
+    # source for what locale-gen accepts.  Each entry in locale.gen is:
+    #    <locale-name> <charmap>
+    # e.g.  "#en_US.UTF-8 UTF-8"  or  "#ur_PK UTF-8"
+    #
+    # We extract every UTF-8 locale, keep the first column (the locale name)
+    # exactly as-is, and present that to the user.  This guarantees the value
+    # selected by the user matches a real locale.gen entry.
+    local gen="/etc/locale.gen"
 
-    INSTALL_LOCALE=$(printf '%s\n' "${locales[@]}" | tui_search "Locale") || {
+    # If the live ISO ships a tiny stub, use the full glibc file instead.
+    if [[ -f /usr/share/i18n/SUPPORTED ]] \
+        && [[ $(grep -c 'UTF-8' "$gen" 2>/dev/null) -lt 10 ]]; then
+        gen="/usr/share/i18n/SUPPORTED"
+    fi
+
+    # Extract all UTF-8 locale names (first column) — both forms:
+    #   en_US.UTF-8 UTF-8   →  en_US.UTF-8
+    #   ur_PK UTF-8         →  ur_PK
+    local locale_list
+    locale_list=$(awk '/UTF-8/ && /^[a-z]/ { print $1 }' "$gen" | sort -u)
+
+    INSTALL_LOCALE=$(printf '%s\n' "$locale_list" | tui_search "Locale") || {
         INSTALL_LOCALE="en_US.UTF-8"
     }
 }
@@ -748,26 +737,88 @@ step_configure_system() {
         arch-chroot "$MOUNT_POINT" ln -sf "/usr/share/zoneinfo/${INSTALL_TIMEZONE}" /etc/localtime
         arch-chroot "$MOUNT_POINT" hwclock --systohc
 
-        # Locale — always use en_US.UTF-8 as system default
-        # User-selected locale only affects date/time formatting
-        printf '==> Configuring locale\n'
-        
-        # Write a clean locale.gen — always enable en_US.UTF-8
-        printf 'en_US.UTF-8 UTF-8\n' > "${MOUNT_POINT}/etc/locale.gen"
-        
-        # If user picked something other than en_US, add it too
+        # -------------------------------------------------------------------
+        # Locale configuration
+        # -------------------------------------------------------------------
+        # Design:
+        #   LANG     = en_US.UTF-8   (system UI, logs, tools — always English)
+        #   LC_TIME  = <user locale>  (date/time in user's regional format)
+        #
+        # The target's /etc/locale.gen is the full glibc file (~500 entries,
+        # installed by pacstrap).  Entries have two forms:
+        #   #en_US.UTF-8 UTF-8      (locale name includes .UTF-8)
+        #   #ur_PK UTF-8            (locale name is bare, charset follows)
+        #
+        # The user-selected INSTALL_LOCALE matches the first column exactly
+        # because step_locale() parsed it from the same file format.
+        # -------------------------------------------------------------------
+        printf '==> Configuring locale: %s\n' "${INSTALL_LOCALE}"
+
+        local target_gen="${MOUNT_POINT}/etc/locale.gen"
+
+        # Uncomment a locale entry in the target's locale.gen.
+        # $1 = locale name exactly as it appears in column 1 of locale.gen
+        enable_locale() {
+            local name="$1"
+            local bare="${name%.UTF-8}"   # strip .UTF-8 if present
+
+            # Try the name as given (e.g. "en_US.UTF-8")
+            if grep -q "^#${name} " "$target_gen"; then
+                sed -i "s/^#${name} /${name} /" "$target_gen"
+                return 0
+            fi
+
+            # Try bare form (e.g. "ur_PK")
+            if grep -q "^#${bare} " "$target_gen"; then
+                sed -i "s/^#${bare} /${bare} /" "$target_gen"
+                return 0
+            fi
+
+            # Already enabled — nothing to do
+            if grep -q "^${name} \|^${bare} " "$target_gen"; then
+                return 0
+            fi
+
+            # Not present at all — append it
+            printf '%s UTF-8\n' "${name}" >> "$target_gen"
+        }
+
+        # Always enable en_US.UTF-8
+        enable_locale "en_US.UTF-8"
+
+        # Enable user's locale (no-op when same as en_US.UTF-8)
         if [[ "${INSTALL_LOCALE}" != "en_US.UTF-8" ]]; then
-            printf '%s UTF-8\n' "${INSTALL_LOCALE}" >> "${MOUNT_POINT}/etc/locale.gen"
+            enable_locale "${INSTALL_LOCALE}"
         fi
-        
-        # Generate
+
+        # Generate enabled locales
         arch-chroot "$MOUNT_POINT" locale-gen
-        
-        # Write locale.conf — LANG is always en_US, LC_TIME is user's choice
-        printf 'LANG=en_US.UTF-8\n' > "${MOUNT_POINT}/etc/locale.conf"
+
+        # Resolve the canonical locale name that glibc generated.
+        # If user picked "ur_PK" (bare), the actual usable name is "ur_PK"
+        # not "ur_PK.UTF-8".  Verify with locale -a inside chroot.
+        local resolved_locale="${INSTALL_LOCALE}"
         if [[ "${INSTALL_LOCALE}" != "en_US.UTF-8" ]]; then
-            printf 'LC_TIME=%s\n' "${INSTALL_LOCALE}" >> "${MOUNT_POINT}/etc/locale.conf"
+            local bare="${INSTALL_LOCALE%.UTF-8}"
+            # Check what locale -a actually reports for this locale
+            local found
+            found=$(arch-chroot "$MOUNT_POINT" locale -a 2>/dev/null \
+                    | grep -i "^${bare}" | head -1) || true
+            if [[ -n "$found" ]]; then
+                resolved_locale="$found"
+            fi
         fi
+
+        # Write /etc/locale.conf
+        {
+            printf 'LANG=en_US.UTF-8\n'
+            if [[ "${resolved_locale}" != "en_US.UTF-8" ]]; then
+                printf 'LC_TIME=%s\n' "${resolved_locale}"
+            fi
+        } > "${MOUNT_POINT}/etc/locale.conf"
+        
+        printf '==> locale.conf written:\n'
+        cat "${MOUNT_POINT}/etc/locale.conf"
 
         # Keyboard
         printf '==> Configuring keyboard: %s\n' "${INSTALL_KEYMAP}"
