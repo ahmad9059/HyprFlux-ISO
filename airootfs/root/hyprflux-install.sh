@@ -748,11 +748,26 @@ step_configure_system() {
         arch-chroot "$MOUNT_POINT" ln -sf "/usr/share/zoneinfo/${INSTALL_TIMEZONE}" /etc/localtime
         arch-chroot "$MOUNT_POINT" hwclock --systohc
 
-        # Locale
-        printf '==> Configuring locale: %s\n' "${INSTALL_LOCALE}"
-        arch-chroot "$MOUNT_POINT" sed -i "s/^#${INSTALL_LOCALE}/${INSTALL_LOCALE}/" /etc/locale.gen
+        # Locale — always use en_US.UTF-8 as system default
+        # User-selected locale only affects date/time formatting
+        printf '==> Configuring locale\n'
+        
+        # Write a clean locale.gen — always enable en_US.UTF-8
+        printf 'en_US.UTF-8 UTF-8\n' > "${MOUNT_POINT}/etc/locale.gen"
+        
+        # If user picked something other than en_US, add it too
+        if [[ "${INSTALL_LOCALE}" != "en_US.UTF-8" ]]; then
+            printf '%s UTF-8\n' "${INSTALL_LOCALE}" >> "${MOUNT_POINT}/etc/locale.gen"
+        fi
+        
+        # Generate
         arch-chroot "$MOUNT_POINT" locale-gen
-        printf 'LANG=%s\n' "${INSTALL_LOCALE}" > "${MOUNT_POINT}/etc/locale.conf"
+        
+        # Write locale.conf — LANG is always en_US, LC_TIME is user's choice
+        printf 'LANG=en_US.UTF-8\n' > "${MOUNT_POINT}/etc/locale.conf"
+        if [[ "${INSTALL_LOCALE}" != "en_US.UTF-8" ]]; then
+            printf 'LC_TIME=%s\n' "${INSTALL_LOCALE}" >> "${MOUNT_POINT}/etc/locale.conf"
+        fi
 
         # Keyboard
         printf '==> Configuring keyboard: %s\n' "${INSTALL_KEYMAP}"
