@@ -16,6 +16,7 @@ parted
 # Bootloader (for target system + ISO EFI)
 grub
 efibootmgr
+plymouth
 
 # UEFI shell support (matching releng)
 edk2-shell
