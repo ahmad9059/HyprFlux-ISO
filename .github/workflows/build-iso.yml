@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed archiso git
+          pacman -S --noconfirm --needed archiso grub git
 
       - name: Checkout repository
         uses: actions/checkout@v4
