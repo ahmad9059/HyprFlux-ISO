@@ -311,11 +311,11 @@ step_user() {
         pass2=$(tui_password "Confirm")
 
         if [[ "$pass1" == "$pass2" ]]; then
-            if [[ -n "$pass1" ]]; then
+            if validate_password "$pass1"; then
                 INSTALL_PASSWORD="$pass1"
                 break
             fi
-            tui_error "Password cannot be empty."
+            tui_error "Password cannot be empty or contain ':'."
         else
             tui_error "Passwords do not match. Try again."
         fi
@@ -329,6 +329,14 @@ step_disk_auto() {
     show_banner
     set_status "Disk Setup (Automatic)"
 
+    # Never offer the device the live ISO is running from — wiping it would
+    # kill the installer mid-flight. Derived from the archiso boot mount.
+    local live_disk=""
+    if findmnt -n -o SOURCE /run/archiso/bootmnt &>/dev/null; then
+        live_disk=$(findmnt -n -o SOURCE /run/archiso/bootmnt | sed -E 's/[0-9]+$//; s/p$//')
+    fi
+    [[ -n "$live_disk" ]] && log_warn "Excluding live-ISO device ${live_disk} from disk list."
+
     local disk_list=()
     while IFS= read -r line; do
         local dev size model
@@ -336,12 +344,31 @@ step_disk_auto() {
         size=$(printf '%s' "$line" | awk '{print $2}')
         model=$(printf '%s' "$line" | awk '{$1=$2=""; print $0}' | xargs)
         [[ -z "$dev" ]] && continue
+        [[ -n "$live_disk" && "$dev" == "$live_disk" ]] && continue
         disk_list+=("$dev ($size) ${model:-Unknown}")
     done < <(lsblk -d -p -n -o NAME,SIZE,MODEL 2>/dev/null | grep -v -E 'loop|sr|rom|boot')
 
     if [[ ${#disk_list[@]} -eq 0 ]]; then
         die "No disks found!"
     fi
+
+    # Warn (not abort) when the chosen disk looks too small for HyprFlux.
+    # Parse size strings like "119.2G", "512M" down to GiB.
+    local warn_dev disk_size_gib=0
+    for line in "${disk_list[@]}"; do
+        warn_dev=$(printf '%s' "$line" | awk '{print $1}')
+        local dsz
+        dsz=$(printf '%s' "$line" | awk '{print $2}')
+        case "$dsz" in
+            *T)  disk_size_gib=$(awk -v v="${dsz%T}" 'BEGIN { printf "%d", v*1024 }') ;;
+            *G)  disk_size_gib=$(awk -v v="${dsz%G}" 'BEGIN { printf "%d", v }') ;;
+            *M)  disk_size_gib=$(awk -v v="${dsz%M}" 'BEGIN { printf "%d", v/1024 }') ;;
+        esac
+        if (( disk_size_gib > 0 && disk_size_gib < 25 )); then
+            log_warn "Disk ${warn_dev} is only ~${disk_size_gib} GiB — HyprFlux needs ~25 GiB+."
+        fi
+    done
+    unset warn_dev disk_size_gib dsz
 
     printf '%s%sWARNING: The selected disk will be completely erased!%s\n\n' "$PAD" "${RED}" "${RESET}"
 
@@ -424,6 +451,7 @@ step_disk_auto() {
 
         printf '==> Notifying kernel of partition changes\n'
         partprobe "$INSTALL_DISK" 2>&1 || true
+        udevadm settle 2>/dev/null || true
         sleep 2
     ) >> "$PROGRESS_LOG" 2>&1
     local part_status=$?
@@ -453,6 +481,23 @@ step_disk_auto() {
             ROOT_PART="${part_prefix}2"
         fi
     fi
+
+    # Wait for the kernel to expose the new partition nodes (partprobe is
+    # async on USB/SATA; mkfs on a missing node would die confusingly).
+    local _pdev
+    for _pdev in "${EFI_PART}" "${SWAP_PART}" "${ROOT_PART}"; do
+        [[ -z "$_pdev" ]] && continue
+        local _w=0
+        while [[ ! -b "$_pdev" ]]; do
+            _w=$((_w + 1))
+            (( _w > 30 )) && break
+            sleep 1
+        done
+        if [[ ! -b "$_pdev" ]]; then
+            die "Partition ${_pdev} never appeared after partitioning."
+        fi
+    done
+    unset _pdev _w
 
     # Format partitions with progress
     start_progress "Formatting partitions..."
@@ -617,6 +662,14 @@ step_base_install() {
         --save /etc/pacman.d/mirrorlist >> "$PROGRESS_LOG" 2>&1 || {
         printf 'Reflector timed out or failed, using existing mirrors\n' >> "$PROGRESS_LOG"
     }
+
+    # Guard: a zero-byte/empty mirrorlist would make every pacstrap retry
+    # fail with a confusing error. Fall back to the ISO's default mirrors.
+    if [[ ! -s /etc/pacman.d/mirrorlist ]]; then
+        printf 'Reflector produced an empty mirrorlist — restoring default mirrors\n' >> "$PROGRESS_LOG"
+        cp /etc/pacman.d/mirrorlist.pacnew /etc/pacman.d/mirrorlist 2>/dev/null \
+            || cp /usr/share/pacman/mirrorlist /etc/pacman.d/mirrorlist 2>/dev/null || true
+    fi
     cp /etc/pacman.d/mirrorlist "${MOUNT_POINT}/etc/pacman.d/mirrorlist" || true
 
     stop_progress
@@ -671,9 +724,15 @@ step_base_install() {
     fi
 
     # --- Phase 3: Generate fstab ---
+    # Overwrite (not append): a stale fstab from a failed earlier run would
+    # otherwise produce duplicate mount entries.
     show_banner
     set_status "Generating fstab..."
-    genfstab -U "$MOUNT_POINT" >> "${MOUNT_POINT}/etc/fstab" 2>/dev/null
+    rm -f "${MOUNT_POINT}/etc/fstab"
+    genfstab -U "$MOUNT_POINT" > "${MOUNT_POINT}/etc/fstab" 2>/dev/null || true
+    if [[ ! -s "${MOUNT_POINT}/etc/fstab" ]]; then
+        die "fstab generation produced an empty file — cannot continue."
+    fi
     log_ok "Base system installed successfully."
     tui_wait "" 1
 }
@@ -689,7 +748,8 @@ step_configure_system() {
         # Timezone
         printf '==> Configuring timezone: %s\n' "${INSTALL_TIMEZONE}"
         arch-chroot "$MOUNT_POINT" ln -sf "/usr/share/zoneinfo/${INSTALL_TIMEZONE}" /etc/localtime
-        arch-chroot "$MOUNT_POINT" hwclock --systohc
+        # hwclock can fail in VMs/containers without an RTC device — non-fatal.
+        arch-chroot "$MOUNT_POINT" hwclock --systohc 2>/dev/null || true
 
         # -------------------------------------------------------------------
         # Locale configuration
@@ -804,18 +864,44 @@ step_configure_system() {
         arch-chroot "$MOUNT_POINT" sed -i 's/^#VerbosePkgLists/VerbosePkgLists/' /etc/pacman.conf
         arch-chroot "$MOUNT_POINT" sed -i '/\[multilib\]/,/Include/{s/^#//}' /etc/pacman.conf
 
-        # GRUB -- most failure-prone step, log carefully
+        # GRUB -- most failure-prone step, log carefully.
+        # A silent failure here ships a non-bootable system, so this is the
+        # only step in Step 9 that FAILS the install (after one retry + a
+        # --removable fallback which works on systems without NVRAM support).
         printf '==> Installing GRUB bootloader\n'
+        local grub_ok=false
         if [[ "${INSTALL_BOOT_MODE}" == "uefi" ]]; then
-            arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB 2>&1
+            if arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB 2>&1; then
+                grub_ok=true
+            else
+                printf 'WARNING: first grub-install attempt failed — retrying...\n'
+                if arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB 2>&1; then
+                    grub_ok=true
+                elif arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB --removable 2>&1; then
+                    printf 'NOTE: installed GRUB in removable-mode (no NVRAM entry) — still bootable.\n'
+                    grub_ok=true
+                fi
+            fi
         else
-            arch-chroot "$MOUNT_POINT" grub-install --target=i386-pc "${INSTALL_DISK}" 2>&1
+            if arch-chroot "$MOUNT_POINT" grub-install --target=i386-pc "${INSTALL_DISK}" 2>&1; then
+                grub_ok=true
+            else
+                printf 'WARNING: first grub-install attempt failed — retrying...\n'
+                arch-chroot "$MOUNT_POINT" grub-install --target=i386-pc "${INSTALL_DISK}" 2>&1 \
+                    && grub_ok=true
+            fi
         fi
-        local grub_rc=$?
-        if [[ $grub_rc -ne 0 ]]; then
-            printf 'WARNING: grub-install exited with code %d\n' "$grub_rc"
+
+        if [[ "$grub_ok" != true ]]; then
+            printf 'ERROR: grub-install failed on every attempt — target would not boot.\n'
+            exit 1
         fi
+
         arch-chroot "$MOUNT_POINT" grub-mkconfig -o /boot/grub/grub.cfg 2>&1
+        if [[ $? -ne 0 ]]; then
+            printf 'ERROR: grub-mkconfig failed — target would not boot.\n'
+            exit 1
+        fi
 
         # Services
         printf '==> Enabling NetworkManager\n'
@@ -851,8 +937,12 @@ step_install_hyprflux() {
     local user_home="${MOUNT_POINT}/home/${INSTALL_USERNAME}"
     local wrapper_log="${user_home}/HyprFlux/logs/iso-wrapper.log"
 
-    # DNS for chroot (needed for git clone + package downloads inside chroot)
-    cp --remove-destination /etc/resolv.conf "${MOUNT_POINT}/etc/resolv.conf"
+    # DNS for chroot (needed for git clone + package downloads inside chroot).
+    # The live env always has a resolv.conf; if it is missing, skip — the
+    # chroot install would fail later and surface a clear error then.
+    if [[ -f /etc/resolv.conf ]]; then
+        cp --remove-destination /etc/resolv.conf "${MOUNT_POINT}/etc/resolv.conf" 2>/dev/null || true
+    fi
 
     # Clone the merged HyprFlux repository (base-installer + base-dots inside)
     start_progress "Cloning HyprFlux repository..."
@@ -861,9 +951,21 @@ step_install_hyprflux() {
     (
         [[ -d "${user_home}/HyprFlux" ]] && rm -rf "${user_home}/HyprFlux"
 
-        printf '==> Cloning HyprFlux repository...\n'
-        if ! timeout 300 git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git "${user_home}/HyprFlux" 2>&1; then
-            printf 'ERROR: Failed to clone HyprFlux\n'
+        local _clone_attempt=0
+        local _clone_ok=false
+        while (( _clone_attempt < 3 )); do
+            _clone_attempt=$((_clone_attempt + 1))
+            printf '==> Cloning HyprFlux repository (attempt %d/3)...\n' "$_clone_attempt"
+            if timeout 300 git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git "${user_home}/HyprFlux" 2>&1; then
+                _clone_ok=true
+                break
+            fi
+            [[ -d "${user_home}/HyprFlux" ]] && rm -rf "${user_home}/HyprFlux"
+            sleep 5
+        done
+
+        if [[ "$_clone_ok" != true ]]; then
+            printf 'ERROR: Failed to clone HyprFlux after 3 attempts\n'
             exit 1
         fi
         printf '==> HyprFlux cloned successfully\n'

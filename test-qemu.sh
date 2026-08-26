@@ -129,10 +129,14 @@ QEMU_CMD+=(
   -drive file="${DISK_IMAGE}",if=virtio,format=qcow2
 )
 
-# Always recreate the test disk for a fresh install
-echo "Creating fresh 40G test disk..."
-rm -f "${DISK_IMAGE}"
-qemu-img create -f qcow2 "${DISK_IMAGE}" 40G
+# Always recreate the test disk for a fresh install.
+# Fall back to a writable /tmp location when the configured path is not
+# usable (missing parent dir, no write permission).
+if ! qemu-img create -f qcow2 "${DISK_IMAGE}" 40G >/dev/null 2>&1; then
+  DISK_IMAGE="/tmp/hyprflux-test-disk.qcow2"
+  echo "Configured disk path not writable — using ${DISK_IMAGE}"
+  qemu-img create -f qcow2 "${DISK_IMAGE}" 40G
+fi
 
 echo "Launching QEMU..."
 exec "${QEMU_CMD[@]}"

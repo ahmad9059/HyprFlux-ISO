@@ -1,14 +1,23 @@
-# .zlogin -- Auto-launch HyprFlux installer on tty1
+# .zlogin -- Auto-launch HyprFlux installer on tty1 (and serial console)
 #
 # This file is sourced by zsh on login. When root auto-logs in on tty1
-# (via the getty autologin drop-in), this launches the TUI installer.
+# (via the getty autologin drop-in) or on the serial console ttyS0
+# (serial-getty autologin drop-in), this launches the TUI installer.
 #
-# Only tty1 gets the installer. Other TTYs (Ctrl+Alt+F2, etc.) get a
-# plain shell for debugging.
+# A lock file guarantees only ONE installer instance runs, even if both
+# consoles are connected at the same time. Other TTYs (Ctrl+Alt+F2, etc.)
+# get a plain shell for debugging.
 
-if [[ "$(tty)" == "/dev/tty1" ]]; then
+if [[ "$(tty)" == "/dev/tty1" || "$(tty)" == "/dev/ttyS0" ]]; then
     # Brief pause for terminal to fully initialize
     sleep 1
+
+    # Single-instance lock: the second console reports and stays idle.
+    exec 9>/tmp/hyprflux-installer.lock
+    if ! flock -n 9; then
+        printf '\nHyprFlux installer is already running on another console.\n'
+        return
+    fi
 
     # Launch installer -- if it exits (Ctrl+C or error), user gets a shell
     bash ~/hyprflux-install.sh || true

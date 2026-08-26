@@ -47,6 +47,17 @@ fi
 # --------------------------------------------------------------------------
 # Clean previous build artifacts
 # --------------------------------------------------------------------------
+# Safety: an interrupted build leaves mount binds inside work/x86_64/airootfs.
+# rm -rf'ing a mounted tree can silently delete the BOUND host data, so abort
+# with instructions instead (see the Arch Wiki archiso warning).
+if findmnt "${WORK_DIR}/x86_64/airootfs" &>/dev/null; then
+    echo "Error: Previous build is still mounted (interrupted build?)."
+    echo "Unmount it first:"
+    echo "    findmnt ${WORK_DIR}/x86_64/airootfs"
+    echo "    umount -R ${WORK_DIR}/x86_64/airootfs"
+    exit 1
+fi
+
 echo "==> Cleaning previous build artifacts..."
 rm -rf "${WORK_DIR}" "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"

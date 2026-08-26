@@ -69,6 +69,16 @@ echo ""
 
 echo "==> Phase 0: Setting up chroot environment..."
 
+# --- Crash recovery ---
+# If a previous wrapper run died mid-Phase-A (power loss, OOM), the systemctl
+# shim may still be in place. Restore the real binary before installing a
+# fresh shim so nothing gets double-wrapped.
+if [[ -f /usr/bin/systemctl.real ]]; then
+    cp /usr/bin/systemctl.real /usr/bin/systemctl
+    rm -f /usr/bin/systemctl.real
+    echo "    [Recovery] Restored real systemctl from a previous interrupted run."
+fi
+
 # --- systemctl shim ---
 # Replaces systemctl so that:
 #   - "enable --now" becomes "enable" (strips --now)
@@ -227,9 +237,17 @@ run_as_user "${INSTALL_SCRIPTS}/yay.sh"
 
 # Verify yay was installed and is in PATH
 if ! command -v yay &>/dev/null && ! su - "${TARGET_USER}" -s /bin/bash -c "command -v yay" &>/dev/null; then
-    echo "    [WARN] yay not found in PATH after installation, trying to install again..."
-    # Try installing yay manually as fallback
-    pacman -S --noconfirm yay-bin 2>/dev/null || true
+    echo "    [WARN] yay not found in PATH after installation, retrying from AUR..."
+    # NOTE: yay-bin is AUR-only — `pacman -S yay-bin` can never succeed.
+    # Clone the PKGBUILD and makepkg as the target user (sudo is passwordless
+    # here via the Phase-0 sudoers drop-in).
+    su - "${TARGET_USER}" -s /bin/bash -c "
+        cd /tmp || exit 1
+        rm -rf yay-bin
+        git clone --depth=1 https://aur.archlinux.org/yay-bin.git yay-bin 2>/dev/null || exit 1
+        cd yay-bin || exit 1
+        makepkg -si --noconfirm 2>/dev/null
+    " || echo "    [WARN] yay fallback build failed (AUR packages will not install)"
 fi
 
 # Ensure yay is in the user's PATH by creating a symlink if needed

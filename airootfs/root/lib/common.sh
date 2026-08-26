@@ -71,22 +71,31 @@ die() {
 # Validation
 # ============================================================================
 
-# Hostname: starts with letter, alphanumeric + hyphens, max 63 chars
+# Hostname: starts with letter, alphanumeric + hyphens, max 63 chars.
+# "localhost" is rejected — it would collide with the loopback hostname
+# entry that the installer writes to /etc/hosts.
 validate_hostname() {
     local name="$1"
-    [[ "$name" =~ ^[a-zA-Z][a-zA-Z0-9-]{0,62}$ ]]
+    [[ "$name" =~ ^[a-zA-Z][a-zA-Z0-9-]{0,62}$ ]] && [[ "${name,,}" != "localhost" ]]
 }
 
-# Username: starts with lowercase letter, lowercase + digits + underscore/hyphen, max 32
+# Username: starts with lowercase letter, lowercase + digits + underscore/hyphen, max 32.
+# "root" and any existing system account are rejected — useradd would fail
+# or hijack an existing account (nobody, dbus, uuidd, ...).
 validate_username() {
     local name="$1"
-    [[ "$name" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]
+    [[ "$name" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || return 1
+    [[ "$name" == "root" ]] && return 1
+    id "$name" &>/dev/null && return 1
+    return 0
 }
 
-# Password: at least 1 character (we don't enforce complexity -- user's choice)
+# Password: at least 1 character (we don't enforce complexity -- user's choice).
+# Colons are rejected: chpasswd uses 'user:password' framing, so a ':' in the
+# password would silently truncate it and the login would never work.
 validate_password() {
     local pass="$1"
-    [[ -n "$pass" ]]
+    [[ -n "$pass" ]] && [[ "$pass" != *:* ]]
 }
 
 # ============================================================================
