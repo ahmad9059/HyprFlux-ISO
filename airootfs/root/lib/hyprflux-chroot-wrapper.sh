@@ -9,7 +9,9 @@
 #   $1 = TARGET_USER (the user account created during installation)
 #   $2 = HAS_NVIDIA ("yes" or "no")
 #
-# This script replaces the Arch-Hyprland whiptail flow entirely and runs
+# NOTE: base-installer and base-dots are merged into the HyprFlux repo
+# (base-installer/ and base-dots/ subdirs). This script replaces the
+# base-installer whiptail flow entirely and runs
 # individual install scripts in the correct order with shims to handle
 # chroot limitations (no systemd PID 1, no dbus, no PCI bus, etc.)
 # ============================================================================
@@ -163,14 +165,15 @@ usermod -s /bin/bash "${TARGET_USER}" 2>/dev/null || true
 echo "    Shims installed."
 
 # ============================================================================
-# PHASE A: Run Arch-Hyprland install scripts
+# PHASE A: Run base-installer install scripts
 # ============================================================================
 
-ARCH_HYPR_DIR="${TARGET_HOME}/Arch-Hyprland"
+HYPRFLUX_DIR="${TARGET_HOME}/HyprFlux"  # merged repo root
+ARCH_HYPR_DIR="${HYPRFLUX_DIR}/base-installer"  # merged into HyprFlux repo
 INSTALL_SCRIPTS="${ARCH_HYPR_DIR}/install-scripts"
 
 echo ""
-echo "==> Phase A: Arch-Hyprland components"
+echo "==> Phase A: base-installer components"
 echo ""
 
 # Helper function to run an install script as the target user.
@@ -200,6 +203,14 @@ run_as_user() {
 # Ensure Install-Logs directory exists and is writable
 mkdir -p "${ARCH_HYPR_DIR}/Install-Logs"
 chown -R "${TARGET_USER}:${TARGET_USER}" "${ARCH_HYPR_DIR}/Install-Logs"
+
+# Inject HyprFlux's own zsh.sh over the base one (same as base-installer
+# install.sh does), and run the Chaotic-AUR bootstrap — keeps this wrapper
+# path equivalent to the first-boot path.
+cp "${HYPRFLUX_DIR}/scripts/zsh.sh" "${INSTALL_SCRIPTS}/zsh.sh" 2>/dev/null || true
+chmod +x "${INSTALL_SCRIPTS}/zsh.sh" 2>/dev/null || true
+echo "[A0] Running HyprFlux initial setup (Chaotic-AUR + yay)..."
+su - "${TARGET_USER}" -s /bin/bash -c "bash ${HYPRFLUX_DIR}/scripts/initial.sh" 2>/dev/null ||     echo "    [WARN] initial.sh had issues (continuing)"
 
 # A1: Base packages
 echo "[A1] Installing base packages..."
@@ -294,7 +305,7 @@ run_as_user "${INSTALL_SCRIPTS}/xdph.sh"
 echo "[A14] Installing SDDM theme..."
 run_as_user "${INSTALL_SCRIPTS}/sddm_theme.sh"
 
-# A15: Dotfiles (clones JaKooLit/Hyprland-Dots)
+# A15: Dotfiles (merged base-dots in HyprFlux repo)
 echo "[A15] Installing Hyprland dotfiles..."
 run_as_user "${INSTALL_SCRIPTS}/dotfiles-main.sh"
 
@@ -321,19 +332,37 @@ CONFIG_ENV_FILE="/tmp/hyprflux-module-env.sh"
 cat > "${CONFIG_ENV_FILE}" << MODULE_ENV_EOF
 export HYPRFLUX_ISO_MODE=1
 export HYPRFLUX_DIR="${HYPRFLUX_DIR}"
-export HYPRFLUX_DOTS_DIR="${HYPRFLUX_DIR}/dots"
-export SDDM_THEME="sugar-candy"
-export GRUB_THEME_DIR="/usr/share/grub/themes/Vimix"
-export PLYMOUTH_THEME_DIR="/usr/share/plymouth/themes"
+# modules/expect these from dotsSetup.sh — REPO_DIR is the merged repo root
+export REPO_DIR="${HYPRFLUX_DIR}"
+export SDDM_THEME_NAME="HyprFlux-sddm-theme"
+export SDDM_THEME_SOURCE="${HYPRFLUX_DIR}/utilities/HyprFlux-sddm-theme"
+export SDDM_THEME_DEST="/usr/share/sddm/themes/HyprFlux-sddm-theme"
+export SDDM_CONF="/etc/sddm.conf"
+export GRUB_THEME_ARCHIVE="${HYPRFLUX_DIR}/utilities/HyprFlux-1080p.tar.xz"
+export GRUB_THEME_DIR="/tmp/hyprflux-grub"
+export PLYMOUTH_THEME_ARCHIVE="${HYPRFLUX_DIR}/utilities/hyprflux-plymouth.tar.xz"
+export PLYMOUTH_THEME_DIR="/tmp/hyprflux-plymouth"
+export PLYMOUTH_THEME_NAME="hyprflux"
 export GTK_THEME="HyprFlux-Compact"
 export ICON_THEME="Papirus-Dark"
-export CURSOR_THEME="Bibata-Modern-Classic"
+export CURSOR_THEME="Future-black Cursors"
 export CURSOR_SIZE=24
-export FONT_NAME="Noto Sans"
-export FONT_SIZE=11
-export WAYBAR_STYLE="catppuccin-mocha"
+export FONT_NAME="Adwaita Sans 11"
 export TERMINAL="kitty"
-export BROWSER="firefox"
+export BROWSER="chromium"
+export WALLPAPER_REPO="https://github.com/ahmad9059/wallpapers-bank"
+export WALLPAPER_DIR="${TARGET_HOME}/Pictures/wallpapers"
+export BACKUP_DIR="${TARGET_HOME}/dotfiles_backup"
+export NVIM_CONFIG_DIR="${TARGET_HOME}/.config/nvim"
+export REPO_URL_NVIM="https://github.com/ahmad9059/nvim"
+export TMUXIFIER_REPO="https://github.com/jimeh/tmuxifier.git"
+export BIBATA_CURSOR_ARCHIVE="${HYPRFLUX_DIR}/utilities/Bibata-Modern-Classic.tar.xz"
+export AI_TOOLS_AUR_PACKAGES="claude-code opencode-bin openai-codex-bin"
+export DESKTOP_DIR="${TARGET_HOME}/.local/share/applications"
+export ICON_DIR="${TARGET_HOME}/.local/share/icons/apps"
+export WEBAPPS_CONF="${HYPRFLUX_DIR}/config/webapps.conf"
+export WAYBAR_STYLE_TARGET="${TARGET_HOME}/.config/waybar/style.css"
+export WAYBAR_LAYOUT_TARGET="${TARGET_HOME}/.config/waybar/config"
 MODULE_ENV_EOF
 
 # Run modules in order
@@ -534,7 +563,7 @@ if [[ -f "${INSTALL_SCRIPTS}/Global_functions.sh.bak" ]]; then
 fi
 
 # Clean up any install logs in the target user's home
-rm -rf "${TARGET_HOME}/Arch-Hyprland/Install-Logs" 2>/dev/null || true
+rm -rf "${TARGET_HOME}/HyprFlux/base-installer/Install-Logs" 2>/dev/null || true
 
 echo "    Cleanup complete."
 

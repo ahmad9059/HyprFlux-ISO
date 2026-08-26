@@ -28,6 +28,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Shell syntax check (installer + TUI)
+        run: |
+          FAIL=0
+          while IFS= read -r -d '' f; do
+            bash -n "$f" 2>/dev/null || { echo "BASH SYNTAX FAIL: $f"; FAIL=1; }
+          done < <(find airootfs -name '*.sh' -print0)
+          [ $FAIL -eq 0 ] || exit 1
+          echo "All installer scripts parse OK"
+
       - name: Build ISO
         run: |
           echo "Building HyprFlux ISO..."

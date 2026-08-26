@@ -49,6 +49,18 @@ ROOT_PART=""
 # Initialize TUI
 # ============================================================================
 check_terminal_size
+
+# Runtime dependency check: the TUI framework is built on gum + fzf, which
+# must be present in the live environment (they are in packages.x86_64).
+for _req in gum fzf; do
+  if ! command -v "$_req" >/dev/null 2>&1; then
+    printf '\n[ERROR] Required TUI dependency missing: %s\n' "$_req" >&2
+    printf '        The live environment is broken — rebuild the ISO or install %s.\n' "$_req" >&2
+    exit 1
+  fi
+done
+unset _req
+
 show_banner
 
 # ============================================================================
@@ -62,6 +74,18 @@ trap 'stop_progress 2>/dev/null || true; die "An unexpected error occurred on li
 # Pre-flight: Detect hardware
 # ============================================================================
 set_status "Initializing..."
+
+# Clean stale mounts from a previous (failed) install attempt so a re-run
+# of the installer does not fail with "already mounted".
+if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+    log_warn "Stale mount detected at $MOUNT_POINT — unmounting..."
+    umount -R "$MOUNT_POINT" 2>/dev/null || true
+fi
+if mountpoint -q "${MOUNT_POINT}/boot" 2>/dev/null; then
+    umount "${MOUNT_POINT}/boot" 2>/dev/null || true
+fi
+swapoff -a 2>/dev/null || true
+
 tui_wait "Detecting hardware..." 2
 INSTALL_BOOT_MODE=$(detect_boot_mode)
 INSTALL_HAS_NVIDIA=$(detect_nvidia)
@@ -422,8 +446,15 @@ step_disk_auto() {
     tui_print ""
     if tui_yesno "Create a swap partition?"; then
         USE_SWAP=true
-        SWAP_SIZE=$(tui_input "Swap size (GB)" "4")
-        [[ -z "$SWAP_SIZE" ]] && SWAP_SIZE="4"
+        # Validate: positive integer only (protects sgdisk from garbage input)
+        while true; do
+            SWAP_SIZE=$(tui_input "Swap size (GB)" "4")
+            [[ -z "$SWAP_SIZE" ]] && SWAP_SIZE="4"
+            if [[ "$SWAP_SIZE" =~ ^[0-9]+$ ]] && (( SWAP_SIZE > 0 )); then
+                break
+            fi
+            tui_error "Invalid swap size '${SWAP_SIZE}' — enter a positive number (e.g. 4, 8, 16)."
+        done
     fi
 
     # Partitioning -- use progress display for all disk ops
@@ -896,19 +927,13 @@ step_install_hyprflux() {
     cp --remove-destination /etc/resolv.conf "${MOUNT_POINT}/etc/resolv.conf"
 
     # Clone repositories with progress display
-    start_progress "Cloning HyprFlux repositories..."
+    start_progress "Cloning HyprFlux repository..."
 
     set +e
     (
-        arch_hypr_dir="${user_home}/Arch-Hyprland"
-        [[ -d "${arch_hypr_dir}" ]] && rm -rf "${arch_hypr_dir}"
-
-        printf '==> Cloning Arch-Hyprland repository...\n'
-        if ! timeout 300 git clone --depth=1 https://github.com/ahmad9059/Arch-Hyprland.git "${arch_hypr_dir}" 2>&1; then
-            printf 'ERROR: Failed to clone Arch-Hyprland\n'
-            exit 1
-        fi
-        printf '==> Arch-Hyprland cloned successfully\n'
+        # NOTE: base-installer and base-dots are MERGED into the HyprFlux
+        # repo (base-installer/ and base-dots/ subdirs) — only HyprFlux
+        # needs to be cloned now.
 
         [[ -d "${user_home}/HyprFlux" ]] && rm -rf "${user_home}/HyprFlux"
 
@@ -925,7 +950,7 @@ step_install_hyprflux() {
     stop_progress
 
     if [[ $clone_status -ne 0 ]]; then
-        die "Failed to clone repositories. Check internet connection."
+        die "Failed to clone HyprFlux repository. Check internet connection."
     fi
 
     show_banner

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Wire up the HyprFlux, Arch-Hyprland, and Hyprland-Dots installation pipeline to run inside the chroot after the base system is configured. This is the phase that turns a plain Arch install into a fully configured HyprFlux Hyprland desktop.
+Wire up the HyprFlux, base-installer (was Arch-Hyprland), and base-dots (was Hyprland-Dots) installation pipeline to run inside the chroot after the base system is configured. This is the phase that turns a plain Arch install into a fully configured HyprFlux Hyprland desktop.
 
 After this phase, the full installer is complete: boot ISO -> answer prompts -> reboot into a working HyprFlux desktop.
 
@@ -10,24 +10,24 @@ After this phase, the full installer is complete: boot ISO -> answer prompts -> 
 
 ## Why a Chroot Wrapper Is Required
 
-The original plan was to run `HyprFlux/install.sh` -> `Arch-Hyprland/install.sh` directly inside `arch-chroot`. Deep analysis of the actual source code revealed **9+ points of failure** that make this impossible:
+The original plan was to run `HyprFlux/install.sh` -> `base-installer/install.sh` directly inside `arch-chroot`. Deep analysis of the actual source code revealed **9+ points of failure** that make this impossible:
 
 | Problem | Where | Why it breaks in chroot |
 |---------|-------|------------------------|
-| Exits if run as root | Arch-Hyprland `install.sh:31` | `if [[ $EUID -eq 0 ]]; then exit 1; fi` |
-| Whiptail interactive checklist | Arch-Hyprland `install.sh:224-335` | NOT controlled by `HYP` variable — blocks waiting for user input |
+| Exits if run as root | base-installer `install.sh:31` | `if [[ $EUID -eq 0 ]]; then exit 1; fi` |
+| Whiptail interactive checklist | base-installer `install.sh:224-335` | NOT controlled by `HYP` variable — blocks waiting for user input |
 | `systemctl enable --now` | pipewire.sh, bluetooth.sh, sddm.sh, monitors | No running systemd PID 1 in chroot |
 | `systemctl --user` | pipewire.sh (3 calls) | No user dbus session in chroot |
-| `lspci` for NVIDIA detection | Arch-Hyprland `install.sh:219` | No PCI bus access in chroot |
+| `lspci` for NVIDIA detection | base-installer `install.sh:219` | No PCI bus access in chroot |
 | `gsettings` / dbus | HyprFlux module `08-gtk.sh` | No dbus session bus in chroot |
 | `script -qfc` | `lib/packages.sh:53` | Requires `/dev/pts` pseudo-terminal |
-| `chsh` retry loop | Arch-Hyprland `zsh.sh:89` | Requires PAM authentication; loops forever on failure |
+| `chsh` retry loop | base-installer `zsh.sh:89` | Requires PAM authentication; loops forever on failure |
 | `ask_yes_no()` interactive | HyprFlux module `17-optional-packages.sh` | Hangs waiting for TTY input (but empty stdin = auto-skip) |
 | `setup_sudo()` keep-alive | `lib/common.sh` | Background `while true` loop in chroot (harmless with NOPASSWD) |
 | curl/git downloads | Various scripts | Needs DNS/network properly configured in chroot |
 | `nwg-look` display ops | HyprFlux module `08-gtk.sh` | No display server in chroot |
 
-**Solution:** Create a custom **chroot wrapper script** (`hyprflux-chroot-wrapper.sh`) that replaces the Arch-Hyprland whiptail flow entirely. It runs individual install scripts in the correct order with chroot-safe adaptations.
+**Solution:** Create a custom **chroot wrapper script** (`hyprflux-chroot-wrapper.sh`) that replaces the base-installer whiptail flow entirely. It runs individual install scripts in the correct order with chroot-safe adaptations.
 
 ---
 
@@ -48,7 +48,7 @@ ISO Installer (Phase 4)
               ├─ Install chsh shim (no-op, shell set via usermod)
               ├─ Install gsettings/nwg-look shims (no dbus in chroot)
               │
-              ├─ Phase A: Arch-Hyprland scripts (in order)
+              ├─ Phase A: base-installer scripts (in order)
               │   ├─ 00-base.sh
               │   ├─ pacman.sh
               │   ├─ yay.sh (as target user, makepkg)
@@ -63,7 +63,7 @@ ISO Installer (Phase 4)
               │   ├─ thunar.sh (file manager)
               │   ├─ xdph.sh (xdg-desktop-portal-hyprland)
               │   ├─ sddm_theme.sh (SDDM theming)
-              │   └─ dotfiles-main.sh (clones JaKooLit/Hyprland-Dots)
+              │   └─ dotfiles-main.sh (runs merged base-dots copy.sh)
               │
               ├─ Phase B: HyprFlux dotsSetup modules (01-17)
               │   ├─ modules 01-07: run as-is
@@ -116,9 +116,9 @@ step_install_hyprflux() {
         "git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git ~/HyprFlux" \
         2>&1 | while IFS= read -r line; do log_cmd "$line"; done
     
-    log_step "Cloning Arch-Hyprland repository..."
+    log_step "Cloning base-installer repository (pre-merge plan)..."
     arch-chroot "$MOUNT_POINT" su - "${INSTALL_USERNAME}" -c \
-        "git clone --depth=1 https://github.com/ahmad9059/Arch-Hyprland.git ~/Arch-Hyprland" \
+        "git clone --depth=1 https://github.com/ahmad9059/Arch-Hyprland.git ~/Arch-Hyprland" \  # NOTE: pre-merge plan — now merged as base-installer/
         2>&1 | while IFS= read -r line; do log_cmd "$line"; done
     
     # ====== Copy wrapper script into chroot ======
@@ -265,23 +265,23 @@ echo "${TARGET_USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/hyprflux-temp
 chmod 440 /etc/sudoers.d/hyprflux-temp
 
 # ================================================================
-# PHASE A: Run Arch-Hyprland install scripts individually
+# PHASE A: Run base-installer install scripts individually
 # ================================================================
 # Instead of running install.sh (which has whiptail and root check),
 # we run each script in the correct order.
 
-ARCH_HYPR_DIR="${TARGET_HOME}/Arch-Hyprland"
+ARCH_HYPR_DIR="${TARGET_HOME}/HyprFlux/base-installer"  # merged layout
 INSTALL_SCRIPTS="${ARCH_HYPR_DIR}/install-scripts"
 
-# NOTE: We do NOT export ISAUR="yay" here. Each Arch-Hyprland script
+# NOTE: We do NOT export ISAUR="yay" here. Each base-installer script
 # independently sources Global_functions.sh, which auto-detects yay if
 # installed (line 73). Since yay.sh runs before any script that needs
 # the AUR helper, auto-detection works correctly. Also, `export` wouldn't
 # survive the `su -` boundary anyway (su resets the environment).
 
-echo "==> Phase A: Arch-Hyprland components"
+echo "==> Phase A: base-installer components"
 
-# NOTE: Arch-Hyprland's install.sh (lines 346-353) downloads custom scripts
+# NOTE: base-installer's install.sh (lines 346-353) downloads custom scripts
 # from ahmad9059/Scripts (replace_reads.sh, initial.sh, custom zsh.sh) and
 # runs them BEFORE the whiptail selection. Since our wrapper bypasses install.sh
 # entirely, these scripts are skipped. If they contain essential setup not
@@ -357,8 +357,8 @@ su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/xdph.sh" |
 echo "==> [A14] Installing SDDM theme..."
 su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/sddm_theme.sh" || true
 
-# A15: Dotfiles (Hyprland-Dots)
-# NOTE: This clones a THIRD repo (JaKooLit/Hyprland-Dots) inside chroot.
+# A15: Dotfiles (base-dots)
+# NOTE (outdated): base-dots (was Hyprland-Dots) is now merged into the HyprFlux repo — no third repo clone.
 # Network access is required (DNS resolution already copied to chroot).
 echo "==> [A15] Installing Hyprland dotfiles..."
 su - "${TARGET_USER}" -c "cd ${ARCH_HYPR_DIR} && bash install-scripts/dotfiles-main.sh"
@@ -737,12 +737,12 @@ This is a ~6 line change. **However, with the chroot wrapper approach, we don't 
 
 | Issue | Risk | Mitigation |
 |-------|------|------------|
-| Individual Arch-Hyprland script fails | Medium | `|| true` on non-critical scripts; continue with rest |
+| Individual base-installer script fails | Medium | `|| true` on non-critical scripts; continue with rest |
 | yay compilation fails in chroot | Low | `/dev/pts` is bind-mounted by arch-chroot; `script -qfc` should work |
 | Zsh `chsh` hangs in chroot | **Eliminated** | chsh shimmed as no-op script; shell pre-set via `usermod` |
 | Network drops during AUR builds | Medium | Non-fatal; user can re-run yay after reboot |
 | Oh My Zsh curl install hangs | Low | Timeout via `--max-time` in curl calls |
-| ISAUR not set for Arch-Hyprland scripts | **Eliminated** | Each script sources Global_functions.sh which auto-detects yay |
+| ISAUR not set for base-installer scripts | **Eliminated** | Each script sources Global_functions.sh which auto-detects yay |
 | `export -f` won't survive `su -` | **Eliminated** | Using script shims in `/usr/local/bin/` instead of function exports |
 | systemctl `--user enable` fails in chroot | Low | Shim attempts it (may fail silently); first-boot service handles pipewire |
 | setup_sudo() background loops accumulate | Low | NOPASSWD sudoers means `sudo -v` succeeds immediately; loops exit with subshell |

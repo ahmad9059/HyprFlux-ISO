@@ -38,7 +38,7 @@ The flow is:
 5. Partition and mount the target disk
 6. Install the base Arch system with `pacstrap`
 7. Configure timezone, locale, users, networking, and GRUB in the target system
-8. Clone the HyprFlux and Arch-Hyprland repositories into the target user's home directory
+8. Clone the HyprFlux repository (base-installer and base-dots are merged subdirs) into the target user's home directory
 9. Reboot into the installed system
 10. Continue the HyprFlux desktop integration flow from the installed system's first boot path
 
@@ -271,8 +271,7 @@ The project uses read-only upstream references under `references/`.
 These are used as implementation references and asset sources:
 
 - `references/HyprFlux`
-- `references/Arch-Hyprland`
-- `references/Hyprland-Dots`
+- `references/HyprFlux/` (base-installer/ + base-dots/ merged in)
 
 Typical uses include:
 
@@ -338,8 +337,8 @@ Please review the licenses of:
 
 - Arch Linux and `archiso`
 - HyprFlux
-- Arch-Hyprland
-- Hyprland-Dots
+- base-installer (was Arch-Hyprland; merged into HyprFlux repo)
+- base-dots (was Hyprland-Dots; merged into HyprFlux repo)
 - bundled theme assets under `references/`
 
 ## Author

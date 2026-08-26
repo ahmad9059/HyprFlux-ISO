@@ -4,7 +4,7 @@
 
 Build a custom Arch Linux ISO for **HyprFlux** -- a Hyprland desktop distribution. The ISO boots into a TUI installer (styled like Omarchy with a large ASCII logo at top and scrolling installation output below) that:
 1. Installs base Arch Linux
-2. Runs the HyprFlux + Arch-Hyprland + Hyprland-Dots installation pipeline inside chroot
+2. Runs the merged HyprFlux installation pipeline (base-installer/ + base-dots/ are now subdirs of the HyprFlux repo) inside chroot
 3. Produces a fully configured Hyprland desktop on reboot
 
 ## Requirements
@@ -14,7 +14,7 @@ Build a custom Arch Linux ISO for **HyprFlux** -- a Hyprland desktop distributio
 - **TUI design**: Large centered HyprFlux ASCII art logo at top of screen, scrolling installation output below (Omarchy-style)
 - Two partition options: **Automatic** (wipe entire disk) and **Manual** (user partitions with EFI/Swap/Root)
 - archiso configuration: timezone search, keyboard layout search, locale selection, hostname, user creation
-- **Chroot Wrapper approach** (Option A): custom wrapper replaces Arch-Hyprland's whiptail flow, runs individual scripts with chroot-safe shims
+- **Chroot Wrapper approach** (Option A): custom wrapper replaces base-installer's whiptail flow, runs individual scripts with chroot-safe shims (base-installer + base-dots are MERGED into the HyprFlux repo)
 
 ## Architecture
 
@@ -37,7 +37,7 @@ Installation Pipeline:
   Step 11: Cleanup + reboot
 
 Chroot Wrapper (Step 10):
-  Phase A: Arch-Hyprland scripts (individually, with shims)
+  Phase A: base-installer scripts from HyprFlux/base-installer/ (individually, with shims)
   Phase B: HyprFlux dotsSetup modules (01-17)
   Phase C: Enable system services (sddm, bluetooth, NetworkManager)
   Phase D: First-boot fixup service (GTK/gsettings, pipewire)
@@ -77,8 +77,8 @@ hyprflux-iso/
 +-- plans/                              # Phase plans (6 files)
 +-- references/                         # Read-only reference repos (NOT tracked in git)
 |   +-- HyprFlux/                       # HyprFlux dotfiles repo
-|   +-- Arch-Hyprland/                  # JaKooLit's installer
-|   +-- Hyprland-Dots/                  # JaKooLit's dotfiles
+|   +-- HyprFlux/                        # HyprFlux repo (base-installer/ +
+|   |                                   #   base-dots/ merged in)
 +-- test-qemu.sh                        # QEMU test launcher
 +-- .github/workflows/build-iso.yml     # CI/CD
 ```
@@ -91,7 +91,7 @@ All plans are in `plans/` at repo root. There are 6 phases:
 2. **Phase 2** (`plans/phase-2-boot-configuration.md`): systemd-boot, syslinux, GRUB boot configs
 3. **Phase 3** (`plans/phase-3-tui-framework.md`): TUI framework, ASCII banner, dialog wrappers, auto-launch
 4. **Phase 4** (`plans/phase-4-installer-logic.md`): Network, config prompts, disk partitioning, pacstrap, chroot config
-5. **Phase 5** (`plans/phase-5-hyprflux-integration.md`): Chroot wrapper, shims, Arch-Hyprland scripts, HyprFlux modules, first-boot service
+5. **Phase 5** (`plans/phase-5-hyprflux-integration.md`): Chroot wrapper, shims, base-installer scripts, HyprFlux modules, first-boot service
 6. **Phase 6** (`plans/phase-6-cicd-testing.md`): GitHub Actions CI/CD, testing checklist, release process
 
 **IMPORTANT**: Always read the relevant plan file(s) before implementing or modifying any phase. Plans contain exact specifications, line-number references to upstream repos, and critical notes about chroot-safety issues.
@@ -110,8 +110,8 @@ All plans are in `plans/` at repo root. There are 6 phases:
 ## Reference Repos (in references/, read-only)
 
 - **HyprFlux** (`references/HyprFlux/`): `install.sh` (123 lines), `dotsSetup.sh` (127 lines), `lib/` (common.sh, packages.sh, git.sh), `modules/` (01-17)
-- **Arch-Hyprland** (`references/Arch-Hyprland/`): `install.sh` (515 lines), `install-scripts/` (00-base.sh, pacman.sh, yay.sh, etc.), `install-scripts/Global_functions.sh`
-- **Hyprland-Dots** (`references/Hyprland-Dots/`): JaKooLit's dotfiles (cloned by dotfiles-main.sh during install)
+- **base-installer** (`references/HyprFlux/base-installer/` — merged, was Arch-Hyprland): `install.sh` (pre-patched, no whiptail), `install-scripts/` (00-base.sh, pacman.sh, yay.sh, etc.), `install-scripts/Global_functions.sh`
+- **base-dots** (`references/HyprFlux/base-dots/` — merged, was Hyprland-Dots): upstream-derived dotfiles (pre-patched for non-interactive copy.sh; no clone at install time)
 
 ## Chroot Wrapper Shims
 
@@ -129,7 +129,7 @@ All shims are cleaned up at the end of the wrapper.
 ## Current Status
 
 - All 6 phase plans are written, reviewed, and corrected (18 issues found and fixed)
-- Expert review complete (3 deep-dive research tasks on archiso releng, Arch-Hyprland scripts, HyprFlux modules)
+- Expert review complete (3 deep-dive research tasks on archiso releng, base-installer scripts, HyprFlux modules)
 - **Implementation has NOT started** -- plans are ready, no code exists yet beyond pre-existing test-qemu.sh and CI workflow
 - Next step: Begin Phase 1 implementation
 

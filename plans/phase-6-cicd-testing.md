@@ -182,7 +182,7 @@ The existing `test-qemu.sh` already handles UEFI and BIOS testing. It creates a 
 - [ ] HyprFlux repos clone successfully in chroot
 - [ ] systemctl shim works (no errors from --now calls)
 - [ ] yay installs successfully as non-root user
-- [ ] Arch-Hyprland scripts complete (with shim)
+- [ ] base-installer scripts complete (with shim)
 - [ ] HyprFlux dotsSetup modules complete
 - [ ] Module 08 (GTK) is deferred to first-boot
 - [ ] Module 17 (optional packages) is skipped
