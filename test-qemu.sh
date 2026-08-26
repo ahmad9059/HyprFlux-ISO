@@ -245,34 +245,29 @@ build_qemu_cmd() {
   )
 }
 
-# Always recreate the test disk for a fresh install.
+# Always recreate the test disk for a fresh install: delete any previous
+# qcow2 first (clean start every run), then create a new one.
 # Failure handling is deliberate: /tmp has the sticky bit, so a stale
 # root-owned file from an earlier `sudo` run makes a fixed /tmp name
 # un-creatable. Fall back to a unique per-user name with numbered retries.
 create_test_disk() {
   local path="$1"
+  rm -f "${path}" 2>/dev/null || true
   qemu-img create -f qcow2 "${path}" 40G >/dev/null 2>&1
 }
 
 if ! create_test_disk "${DISK_IMAGE}"; then
-  # Try to clear a stale file at the primary path, then per-user /tmp names.
-  rm -f "${DISK_IMAGE}" 2>/dev/null || true
-  if create_test_disk "${DISK_IMAGE}"; then
-    echo "Replaced stale test disk at ${DISK_IMAGE}"
-  else
-    uid=$(id -u)
-    DISK_IMAGE="${TMPDIR:-/tmp}/hyprflux-test-disk-${uid}.qcow2"
-    if ! create_test_disk "${DISK_IMAGE}"; then
-      rm -f "${DISK_IMAGE}" 2>/dev/null || true
-      for i in 1 2 3 4 5; do
-        DISK_IMAGE="${TMPDIR:-/tmp}/hyprflux-test-disk-${uid}-${i}.qcow2"
-        if create_test_disk "${DISK_IMAGE}"; then
-          break
-        fi
-      done
-    fi
-    echo "Configured disk path not usable — using ${DISK_IMAGE}"
+  uid=$(id -u)
+  DISK_IMAGE="${TMPDIR:-/tmp}/hyprflux-test-disk-${uid}.qcow2"
+  if ! create_test_disk "${DISK_IMAGE}"; then
+    for i in 1 2 3 4 5; do
+      DISK_IMAGE="${TMPDIR:-/tmp}/hyprflux-test-disk-${uid}-${i}.qcow2"
+      if create_test_disk "${DISK_IMAGE}"; then
+        break
+      fi
+    done
   fi
+  echo "Configured disk path not usable — using ${DISK_IMAGE}"
 fi
 
 try_modes=("${DISPLAY_MODE}")
