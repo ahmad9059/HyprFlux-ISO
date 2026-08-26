@@ -94,115 +94,38 @@ log_info "NVIDIA GPU: ${INSTALL_HAS_NVIDIA}"
 tui_wait "Ready" 1
 
 # ============================================================================
-# Step 0: Network Setup
+# Step 0: Network Check
 # ============================================================================
-setup_ethernet() {
-    local ifaces
-    ifaces=$(nmcli -t -f DEVICE,TYPE device 2>/dev/null | grep ethernet | cut -d: -f1 || true)
-
-    if [[ -z "$ifaces" ]]; then
-        return 1
-    fi
-
-    for iface in $ifaces; do
-        nmcli device connect "$iface" 2>/dev/null && break || true
-    done
-
-    tui_wait "Waiting for DHCP lease..." 5
-}
-
-setup_wifi() {
+# Simple connectivity gate: ping 1.1.1.1. If it responds, proceed. No
+# network configuration UI — the live ISO uses NetworkManager for Ethernet
+# (DHCP) out of the box; WiFi users should connect via nmtui beforehand.
+# ============================================================================
+check_network() {
     show_banner
-    set_status "WiFi Setup"
+    set_status "Checking network connection..."
 
-    nmcli device wifi rescan 2>/dev/null || true
-    tui_wait "Scanning WiFi networks..." 3
-
-    local networks=()
-    while IFS=: read -r ssid signal security; do
-        [[ -z "$ssid" ]] && continue
-        networks+=("${ssid} (${signal}% ${security})")
-    done < <(nmcli -t -f SSID,SIGNAL,SECURITY device wifi list 2>/dev/null | \
-        grep -v '^:' | sort -t: -k2 -rn | head -20)
-
-    if [[ ${#networks[@]} -eq 0 ]]; then
-        tui_error "No WiFi networks found."
-        return 1
-    fi
-
-    show_banner
-    set_status "WiFi Setup"
-
-    local selection
-    selection=$(tui_menu "Select WiFi Network:" "${networks[@]}") || return 1
-
-    local ssid
-    ssid=$(printf '%s' "$selection" | sed 's/ (.*$//')
-    [[ -z "$ssid" ]] && return 1
-
-    show_banner
-    set_status "WiFi Setup"
-
-    local password
-    password=$(tui_password "WiFi Password") || return 1
-
-    show_banner
-    tui_spinner "Connecting to '$ssid'..." nmcli device wifi connect "$ssid" password "$password" || true
-}
-
-setup_network() {
-    show_banner
-    set_status "Network Setup"
-
-    tui_spinner "Checking internet connection..." check_internet && {
+    if tui_spinner "Checking internet connection (ping 1.1.1.1)..." check_internet; then
+        log_ok "Internet connection OK."
         return 0
-    }
+    fi
 
-    log_warn "No internet connection detected."
-    tui_spinner "Starting NetworkManager..." systemctl start NetworkManager || true
-    tui_wait "Waiting for NetworkManager..." 2
-
-    while true; do
-        show_banner
-        set_status "Network Setup"
-
-        local choice
-        choice=$(tui_menu "Network Setup:" \
-            "Ethernet (auto DHCP)" \
-            "WiFi" \
-            "Manual (drop to shell)" \
-            "Skip (not recommended)") || choice="Skip"
-
-        case "$choice" in
-            "Ethernet"*)
-                show_banner
-                set_status "Connecting via Ethernet..."
-                setup_ethernet
-                ;;
-            "WiFi"*)
-                setup_wifi
-                ;;
-            "Manual"*)
-                show_banner
-                set_status "Manual Network Setup"
-                tui_print "Use: nmcli, nmtui, or ip commands"
-                tui_print "Type 'exit' when connected."
-                tui_print ""
-                bash || true
-                ;;
-            "Skip"*)
-                return 0
-                ;;
-        esac
-
-        show_banner
-        if tui_spinner "Checking internet connection..." check_internet; then
+    # NetworkManager may still be bringing up the link — retry briefly.
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        log_warn "No response from 1.1.1.1 (attempt ${attempt}/5). Retrying..."
+        sleep 3
+        if check_internet; then
+            log_ok "Internet connection OK."
             return 0
         fi
-
-        show_banner
-        tui_error "Still no internet connection."
     done
+
+    show_banner
+    tui_error "No internet connection (ping 1.1.1.1 failed)."
+    tui_print "HyprFlux requires an internet connection to install."
+    tui_print ""
+    tui_print "If you are on WiFi, connect first with: nmtui"
+    exit 1
 }
 
 # ============================================================================
@@ -915,26 +838,27 @@ step_configure_system() {
 }
 
 # ============================================================================
-# Step 10: Prepare HyprFlux installation for first-boot
+# Step 10: HyprFlux integration (runs INSIDE chroot during installation)
 # ============================================================================
-# Clones repos into the target system and creates a first-boot script that
-# runs HyprFlux/install.sh on the user's first tty1 login after reboot.
+# Clones the HyprFlux repo (base-installer/ + base-dots/ are merged subdirs)
+# into the target system, then runs the chroot wrapper (Phase A: base-installer
+# scripts, Phase B: dotfiles modules, Phase C: services, Phase D: first-boot
+# fixup). Everything except dbus-dependent settings is configured NOW; the
+# Phase D autostart entry applies gsettings/nwg-look/pipewire-user on first
+# login to the desktop.
 # ============================================================================
 step_install_hyprflux() {
     local user_home="${MOUNT_POINT}/home/${INSTALL_USERNAME}"
+    local wrapper_log="${user_home}/HyprFlux/logs/iso-wrapper.log"
 
-    # DNS for chroot (needed for git clone inside chroot)
+    # DNS for chroot (needed for git clone + package downloads inside chroot)
     cp --remove-destination /etc/resolv.conf "${MOUNT_POINT}/etc/resolv.conf"
 
-    # Clone repositories with progress display
+    # Clone the merged HyprFlux repository (base-installer + base-dots inside)
     start_progress "Cloning HyprFlux repository..."
 
     set +e
     (
-        # NOTE: base-installer and base-dots are MERGED into the HyprFlux
-        # repo (base-installer/ and base-dots/ subdirs) — only HyprFlux
-        # needs to be cloned now.
-
         [[ -d "${user_home}/HyprFlux" ]] && rm -rf "${user_home}/HyprFlux"
 
         printf '==> Cloning HyprFlux repository...\n'
@@ -954,80 +878,46 @@ step_install_hyprflux() {
     fi
 
     show_banner
-    tui_spinner "Setting file permissions..." arch-chroot "$MOUNT_POINT" chown -R \
-        "${INSTALL_USERNAME}:${INSTALL_USERNAME}" \
-        "/home/${INSTALL_USERNAME}" || true
+    tui_spinner "Setting file permissions..." arch-chroot "$MOUNT_POINT" chown -R         "${INSTALL_USERNAME}:${INSTALL_USERNAME}"         "/home/${INSTALL_USERNAME}" || true
+
+    # Copy the chroot wrapper into the target and run it. It orchestrates:
+    #   Phase A: base-installer install scripts (packages, yay, AUR, zsh...)
+    #   Phase B: HyprFlux dotfiles modules 01-16
+    #   Phase C: enable sddm/bluetooth/NetworkManager + graphical.target
+    #   Phase D: first-boot autostart fixup (gsettings/nwg-look/pipewire)
+    mkdir -p "${user_home}/HyprFlux/logs"
+    cp "${SCRIPT_DIR}/lib/hyprflux-chroot-wrapper.sh" "${MOUNT_POINT}/tmp/hyprflux-chroot-wrapper.sh"
+    chmod 755 "${MOUNT_POINT}/tmp/hyprflux-chroot-wrapper.sh"
 
     show_banner
-    set_status "Configuring first-boot installer..."
+    set_status "Installing HyprFlux (packages, config, themes)..."
+    tui_print "This takes 20-60 minutes depending on internet speed."
+    tui_print "Live progress is shown below; full log saved to ~/HyprFlux/logs/iso-wrapper.log"
+    tui_print ""
 
-    # Create first-boot installer script
-    cat > "${user_home}/.hyprflux-firstboot.sh" << 'FIRSTBOOT_EOF'
-#!/bin/bash
-# HyprFlux First-Boot Installer
-MARKER="$HOME/.hyprflux-install-done"
-[[ -f "$MARKER" ]] && return 0
-[[ "$(tty)" != "/dev/tty1" ]] && return 0
+    start_progress "Installing HyprFlux..."
 
-# Center output (same formula as the TUI: 66-col banner centered)
-_cols=$(tput cols 2>/dev/null || echo 80)
-_lpad=$(( (_cols - 66) / 2 ))
-(( _lpad < 0 )) && _lpad=0
-_pad=$(printf "%*s" "$_lpad" "")
+    set +e
+    (
+        arch-chroot "$MOUNT_POINT" /bin/bash /tmp/hyprflux-chroot-wrapper.sh             "${INSTALL_USERNAME}" "${INSTALL_HAS_NVIDIA}"
+    ) | tee "${wrapper_log}" >> "$PROGRESS_LOG" 2>&1
+    local wrapper_status=${PIPESTATUS[0]}
+    set -e
 
-echo ""
-echo "${_pad}=============================================="
-echo "${_pad}  Welcome to HyprFlux!"
-echo "${_pad}=============================================="
-echo ""
-echo "${_pad}  Starting HyprFlux installation..."
-echo "${_pad}  This will take 20-60 minutes."
-echo "${_pad}  Please do NOT interrupt the process."
-echo ""
-sleep 3
+    stop_progress
 
-cd "$HOME" || exit 1
-if [[ -f "$HOME/HyprFlux/install.sh" ]]; then
-    bash "$HOME/HyprFlux/install.sh"
-    INSTALL_EXIT=$?
+    rm -f "${MOUNT_POINT}/tmp/hyprflux-chroot-wrapper.sh"
+    chown "${INSTALL_USERNAME}:${INSTALL_USERNAME}" "${wrapper_log}" 2>/dev/null || true
 
-    if [[ $INSTALL_EXIT -eq 0 ]]; then
-        touch "$MARKER"
-        echo ""
-        echo "${_pad}  Installation Complete!"
-        echo "${_pad}  To start Hyprland desktop, type: Hyprland"
-        echo "${_pad}  Or reboot and login again."
-        echo ""
-    else
-        echo ""
-        echo "${_pad}  Installation had errors. Try: bash ~/HyprFlux/install.sh"
-        echo ""
+    if [[ $wrapper_status -ne 0 ]]; then
+        show_banner
+        tui_error "HyprFlux installation failed (exit ${wrapper_status})."
+        tui_print "Full log: ${wrapper_log}"
+        die "HyprFlux installation failed. See ${wrapper_log}"
     fi
-else
-    echo ""
-    echo "${_pad}  ERROR: HyprFlux installer not found!"
-    echo "${_pad}  Fix: git clone https://github.com/ahmad9059/HyprFlux.git"
-    echo "${_pad}        then: bash ~/HyprFlux/install.sh"
-    echo ""
-fi
 
-sed -i '/hyprflux-firstboot/d' "$HOME/.bash_profile" 2>/dev/null || true
-FIRSTBOOT_EOF
-    # Not marked executable -- always sourced from .bash_profile
-
-    cat > "${user_home}/.bash_profile" << 'PROFILE_EOF'
-[[ -f "$HOME/.bashrc" ]] && source "$HOME/.bashrc"
-if [[ -f "$HOME/.hyprflux-firstboot.sh" && ! -f "$HOME/.hyprflux-install-done" ]]; then
-    [[ "$(tty)" == "/dev/tty1" ]] && source "$HOME/.hyprflux-firstboot.sh"
-fi
-PROFILE_EOF
-
-    arch-chroot "$MOUNT_POINT" chown \
-        "${INSTALL_USERNAME}:${INSTALL_USERNAME}" \
-        "/home/${INSTALL_USERNAME}/.bash_profile" \
-        "/home/${INSTALL_USERNAME}/.hyprflux-firstboot.sh" 2>/dev/null || true
-
-    log_ok "HyprFlux configured for first-boot installation."
+    show_banner
+    log_ok "HyprFlux installed and configured inside the target system."
     tui_wait "" 1
 }
 
@@ -1038,9 +928,9 @@ step_cleanup_reboot() {
     show_banner
     sync
 
-    tui_success_box "Base Installation Complete!"
+    tui_success_box "HyprFlux Installation Complete!"
 
-    tui_print "Base Arch Linux has been installed."
+    tui_print "Arch Linux + HyprFlux desktop have been installed."
     tui_print ""
     tui_print "Please:"
     tui_print "  1. Remove the USB drive / ISO"
@@ -1048,10 +938,9 @@ step_cleanup_reboot() {
     tui_print ""
     printf '%s%sAfter reboot:%s\n' "$PAD" "${YELLOW}" "${RESET}"
     tui_print "  - Login with username: ${INSTALL_USERNAME}"
-    tui_print "  - HyprFlux installer starts automatically on tty1"
-    tui_print "  - Takes 20-60 minutes (downloads packages)"
-    tui_print "  - Do NOT interrupt -- let it complete"
-    tui_print "  - After completion, type 'Hyprland' to start desktop"
+    tui_print "  - SDDM starts automatically and launches Hyprland"
+    tui_print "  - First-boot setup (GTK theme, pipewire) runs automatically"
+    tui_print "  - If anything is missing, re-run: bash ~/HyprFlux/install.sh"
     tui_print ""
     printf '%s%sPress Enter to reboot...%s' "$PAD" "${DIM}" "${RESET}"
     printf '%s' "${ANSI_SHOW_CURSOR}"
@@ -1073,7 +962,7 @@ step_cleanup_reboot() {
 # Main Installation Flow
 # ============================================================================
 main() {
-    setup_network          # Step 0
+    check_network          # Step 0
     step_welcome           # Step 1
     step_timezone          # Step 2
     step_locale            # Step 3

@@ -129,9 +129,10 @@ All shims are cleaned up at the end of the wrapper.
 ## Current Status
 
 - All 6 phase plans are written, reviewed, and corrected (18 issues found and fixed)
-- Expert review complete (3 deep-dive research tasks on archiso releng, base-installer scripts, HyprFlux modules)
-- **Implementation has NOT started** -- plans are ready, no code exists yet beyond pre-existing test-qemu.sh and CI workflow
-- Next step: Begin Phase 1 implementation
+- **Implementation complete**: TUI installer (`hyprflux-install.sh`), chroot wrapper (`hyprflux-chroot-wrapper.sh`), boot configs (systemd-boot/GRUB/syslinux), live env config — all in place
+- **Integration**: Step 10 clones the HyprFlux repo (base-installer/ + base-dots/ merged subdirs) into the target and runs the chroot wrapper INSIDE chroot during installation (Phase A: base-installer scripts; Phase B: dotfiles modules 01-16; Phase C: services; Phase D: first-boot autostart fixup for gsettings/nwg-look/pipewire-user). No post-reboot install step.
+- Live env: root auto-login on tty1 (+ serial ttyS0), `.zlogin` launches the installer, pacman-init + sshd enabled, plymouth live splash with HyprFlux theme
+- Next step: build the ISO and test in QEMU / on hardware
 
 ## Build & Test
 

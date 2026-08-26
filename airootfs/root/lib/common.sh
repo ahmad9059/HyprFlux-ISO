@@ -94,8 +94,9 @@ validate_password() {
 # ============================================================================
 
 # Check internet connectivity (returns 0 if online)
+# Simple ping to 1.1.1.1 — if it responds, we're online.
 check_internet() {
-    ping -c 1 -W 5 archlinux.org &>/dev/null
+    ping -c 1 -W 3 1.1.1.1 &>/dev/null
 }
 
 # Wait for internet with retries

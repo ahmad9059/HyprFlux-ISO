@@ -18,8 +18,14 @@ so you first task to write extremely detailed plans in phases stored in mds and 
 
 Repo Instructions
 
-- First it install the base archlinux and then start the HyprFlux
-- HyprFlux: clones the Arch-Hyprland and then Hyprland-Dotes
+- First it installs the base Arch Linux, then runs HyprFlux INSIDE chroot
+  during installation (no post-reboot install step)
+- HyprFlux repo (base-installer/ + base-dots/ merged subdirs) is cloned into
+  the target system, then hyprflux-chroot-wrapper.sh orchestrates:
+    Phase A: base-installer install scripts (packages, yay, AUR, zsh...)
+    Phase B: HyprFlux dotfiles modules 01-16
+    Phase C: enable sddm/bluetooth/NetworkManager + graphical.target
+    Phase D: first-boot autostart fixup (gsettings/nwg-look/pipewire-user)
 - Then Apply custom dotfiles
 
 - TUI Installer (that prompts and handle the rest)

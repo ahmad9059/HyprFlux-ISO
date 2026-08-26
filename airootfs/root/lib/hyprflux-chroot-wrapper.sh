@@ -192,6 +192,7 @@ run_as_user() {
     su - "${TARGET_USER}" -s /bin/bash -c "
         export HOME=\"${TARGET_HOME}\"
         export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin\"
+        export HYPRFLUX_LOGS_DIR=\"${TARGET_HOME}/HyprFlux/logs\"
         cd \"${ARCH_HYPR_DIR}\" 2>/dev/null || cd \"\$HOME\"
         bash \"${script}\"
     " || {
@@ -200,9 +201,9 @@ run_as_user() {
     }
 }
 
-# Ensure Install-Logs directory exists and is writable
-mkdir -p "${ARCH_HYPR_DIR}/Install-Logs"
-chown -R "${TARGET_USER}:${TARGET_USER}" "${ARCH_HYPR_DIR}/Install-Logs"
+# Ensure unified log dir exists and is writable by the target user
+mkdir -p "${TARGET_HOME}/HyprFlux/logs/installer"
+chown -R "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/HyprFlux/logs"
 
 # Inject HyprFlux's own zsh.sh over the base one (same as base-installer
 # install.sh does), and run the Chaotic-AUR bootstrap — keeps this wrapper
@@ -301,11 +302,9 @@ run_as_user "${INSTALL_SCRIPTS}/thunar.sh"
 echo "[A13] Installing xdg-desktop-portal-hyprland..."
 run_as_user "${INSTALL_SCRIPTS}/xdph.sh"
 
-# A14: SDDM Theme
-echo "[A14] Installing SDDM theme..."
-run_as_user "${INSTALL_SCRIPTS}/sddm_theme.sh"
+# A14: (removed — SDDM theme ships via HyprFlux module 06-sddm)
 
-# A15: Dotfiles (merged base-dots in HyprFlux repo)
+# A15: Dotfiles (verifies merged base-dots; config deployed once by module 02)
 echo "[A15] Installing Hyprland dotfiles..."
 run_as_user "${INSTALL_SCRIPTS}/dotfiles-main.sh"
 
@@ -357,7 +356,6 @@ export NVIM_CONFIG_DIR="${TARGET_HOME}/.config/nvim"
 export REPO_URL_NVIM="https://github.com/ahmad9059/nvim"
 export TMUXIFIER_REPO="https://github.com/jimeh/tmuxifier.git"
 export BIBATA_CURSOR_ARCHIVE="${HYPRFLUX_DIR}/utilities/Bibata-Modern-Classic.tar.xz"
-export AI_TOOLS_AUR_PACKAGES="claude-code opencode-bin openai-codex-bin"
 export DESKTOP_DIR="${TARGET_HOME}/.local/share/applications"
 export ICON_DIR="${TARGET_HOME}/.local/share/icons/apps"
 export WEBAPPS_CONF="${HYPRFLUX_DIR}/config/webapps.conf"
@@ -373,7 +371,7 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
         module_name=$(basename "$module")
         
         case "$module_name" in
-            08-gtk.sh)
+            07-gtk.sh)
                 # gsettings requires dbus - deferred to first-boot
                 echo "    [B] ${module_name} (gsettings deferred to first-boot)"
                 su - "${TARGET_USER}" -s /bin/bash -c "
@@ -386,10 +384,7 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
                     source \"${module}\"
                 " 2>/dev/null || true
                 ;;
-            17-optional-packages.sh)
-                # Interactive - skip in ISO mode
-                echo "    [B] ${module_name} (skipped - interactive)"
-                ;;
+
             *)
                 echo "    [B] ${module_name}..."
                 su - "${TARGET_USER}" -s /bin/bash -c "
@@ -562,8 +557,10 @@ if [[ -f "${INSTALL_SCRIPTS}/Global_functions.sh.bak" ]]; then
     mv "${INSTALL_SCRIPTS}/Global_functions.sh.bak" "${INSTALL_SCRIPTS}/Global_functions.sh"
 fi
 
-# Clean up any install logs in the target user's home
-rm -rf "${TARGET_HOME}/HyprFlux/base-installer/Install-Logs" 2>/dev/null || true
+# Install logs are intentionally KEPT in ${TARGET_HOME}/HyprFlux/logs/
+# (installer/*.log, dotsSetup.log) — they are the debugging trail for
+# package/config failures and are also where the ISO wrapper run is
+# preserved via the iso-wrapper.log tee from the installer.
 
 echo "    Cleanup complete."
 

@@ -14,7 +14,7 @@ The project focuses on three goals:
 
 ## Overview
 
-The ISO boots to a live Arch environment and auto-logs into `tty1`, where the HyprFlux installer launches automatically. The installer collects system configuration, partitions disks, installs a base Arch system with `pacstrap`, performs core system configuration inside the target root, then prepares the HyprFlux installation flow for first boot.
+The ISO boots to a live Arch environment and auto-logs into `tty1`, where the HyprFlux installer launches automatically. The installer collects system configuration, partitions disks, installs a base Arch system with `pacstrap`, performs core system configuration inside the target root, then runs the full HyprFlux installation (packages, dotfiles, themes, services) inside chroot via `hyprflux-chroot-wrapper.sh`. Only dbus-dependent settings are deferred to a first-boot autostart fixup.
 
 At a high level, the project includes:
 
