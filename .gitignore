@@ -31,3 +31,4 @@ skills-lock.json
 # QEMU test artifacts
 /tmp/hyprflux-*.qcow2
 /tmp/hyprflux-*.fd
+hyprflux-test-disk.qcow2
