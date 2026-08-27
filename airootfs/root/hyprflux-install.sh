@@ -882,14 +882,41 @@ LSB_RELEASE_EOF
         arch-chroot "$MOUNT_POINT" sed -i \
             's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="HyprFlux"/' /etc/default/grub 2>/dev/null || true
 
-        # Root password
+        # -------------------------------------------------------------------
+        # Root password + disk modules
+        # -------------------------------------------------------------------
+        # The config subshell runs with set +e — a silent chpasswd failure
+        # leaves pacstrap's LOCKED root shadow (root:! ...) and the user is
+        # locked out of the emergency console. Verify and hard-fail.
         printf '==> Setting root password\n'
-        printf '%s:%s\n' "root" "${INSTALL_PASSWORD}" | arch-chroot "$MOUNT_POINT" chpasswd
+        if ! printf '%s:%s\n' "root" "${INSTALL_PASSWORD}" | arch-chroot "$MOUNT_POINT" chpasswd; then
+            printf 'ERROR: root chpasswd failed — cannot continue.\n'
+            exit 1
+        fi
+        arch-chroot "$MOUNT_POINT" passwd -u root 2>/dev/null || true
+
+        # CRITICAL for VM installs: mkinitcpio's `autodetect` hook can miss
+        # virtio/NVMe/SATA disk modules when the initramfs is rebuilt in the
+        # chroot, leaving the kernel unable to find the root device at boot
+        # ("Failed to start Cleaning Up and Shutting Down Daemons" +
+        # emergency mode). Explicitly include the common disk stacks.
+        printf '==> Ensuring disk modules in mkinitcpio\n'
+        arch-chroot "$MOUNT_POINT" sed -i \
+            's/^MODULES=.*/MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci)/' \
+            /etc/mkinitcpio.conf 2>/dev/null || \
+            printf 'MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci)\n' \
+                >> "${MOUNT_POINT}/etc/mkinitcpio.conf"
+        # Rebuild NOW with the explicit modules (module 09 rebuilds later too —
+        # this guarantees the bootable initramfs exists even if Phase B skips it).
+        arch-chroot "$MOUNT_POINT" mkinitcpio -P 2>/dev/null || true
 
         # User creation
         printf '==> Creating user: %s\n' "${INSTALL_USERNAME}"
         arch-chroot "$MOUNT_POINT" useradd -m -G wheel -s /bin/bash "${INSTALL_USERNAME}"
-        printf '%s:%s\n' "${INSTALL_USERNAME}" "${INSTALL_PASSWORD}" | arch-chroot "$MOUNT_POINT" chpasswd
+        if ! printf '%s:%s\n' "${INSTALL_USERNAME}" "${INSTALL_PASSWORD}" | arch-chroot "$MOUNT_POINT" chpasswd; then
+            printf 'ERROR: user chpasswd failed — cannot continue.\n'
+            exit 1
+        fi
 
         # Sudo
         printf '==> Configuring sudo\n'
@@ -1063,8 +1090,17 @@ step_install_hyprflux() {
         die "HyprFlux installation failed. See ${wrapper_log}"
     fi
 
+    # Bootability verification: grub.cfg MUST carry a root=UUID= entry or
+    # the kernel cannot mount the root filesystem at boot (emergency mode).
+    # Surface it BEFORE the user reboots instead of after.
     show_banner
-    log_ok "HyprFlux installed and configured inside the target system."
+    set_status "Verifying bootability..."
+    if grep -q "root=UUID=" "${MOUNT_POINT}/boot/grub/grub.cfg" 2>/dev/null; then
+        log_ok "GRUB root=UUID entry present — system is bootable."
+    else
+        log_warn "No root=UUID= entry found in grub.cfg — system may NOT boot."
+        log_warn "Run manually in the chroot: grub-mkconfig -o /boot/grub/grub.cfg"
+    fi
     tui_wait "" 1
 }
 
