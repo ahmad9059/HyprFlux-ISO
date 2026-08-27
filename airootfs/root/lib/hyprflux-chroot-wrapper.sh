@@ -163,9 +163,15 @@ exit 0
 NWGLOOK_SHIM
 chmod +x /usr/local/bin/nwg-look
 
-# --- Ensure sudo works for target user without password ---
+# --- Temporary FULL passwordless sudo (removed at cleanup) ---
 echo "${TARGET_USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/hyprflux-temp
 chmod 440 /etc/sudoers.d/hyprflux-temp
+
+# --- Permanent NARROW passwordless rule: pacman only ---
+# Enables yay/AUR usage for the user in the desktop session (the first-boot
+# AUR install depends on it). Same pattern CachyOS uses for AUR helpers.
+echo "${TARGET_USER} ALL=(ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/hyprflux-pacman
+chmod 440 /etc/sudoers.d/hyprflux-pacman
 
 # --- Pre-set shell to zsh (only if zsh is already installed) ---
 # zsh.sh in Phase A installs zsh; we set the shell after that runs.
@@ -555,28 +561,24 @@ systemctl --user enable --now pipewire.socket 2>/dev/null || true
 systemctl --user enable --now pipewire-pulse.socket 2>/dev/null || true
 systemctl --user enable --now wireplumber.service 2>/dev/null || true
 
-# Retry AUR packages that failed inside the chroot (AUR access is the most
-# fragile install step). In the desktop session we have full network, a
-# working user session and yay — the same packages install reliably here.
+# Install AUR packages (primary path — the desktop session has full
+# network, a real user session and passwordless pacman via the
+# hyprflux-pacman sudoers rule). Any that failed inside the chroot are
+# completed here; ones already present are skipped.
 if command -v yay &>/dev/null; then
-    # Read the package list from the repo (single source of truth)
-    AUR_LIST_FILE="$HOME/HyprFlux/base-installer/install-scripts/01-hypr-pkgs.sh"
-    if [[ -f "$AUR_LIST_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$AUR_LIST_FILE"
-        for _aur_pkg in "${hypr_aur_package[@]}"; do
-            if ! yay -Q "$_aur_pkg" &>/dev/null; then
-                notify-send "HyprFlux" "Installing $_aur_pkg (retry from chroot)..." 2>/dev/null || true
-                yay -S --noconfirm "$_aur_pkg" &>/dev/null
-                if yay -Q "$_aur_pkg" &>/dev/null; then
-                    notify-send "HyprFlux" "$_aur_pkg installed." 2>/dev/null || true
-                else
-                    notify-send "HyprFlux" "$_aur_pkg STILL failed — run: yay -S $_aur_pkg" 2>/dev/null || true
-                fi
+    AUR_PACKAGES=(mpvpaper waybar-git visual-studio-code-bin 64gram-desktop-bin vesktop                   foliate localsend-bin tuxedo-bin claude-code opencode-bin openai-codex-bin                   freedownloadmanager)
+    for _aur_pkg in "${AUR_PACKAGES[@]}"; do
+        if ! yay -Q "$_aur_pkg" &>/dev/null; then
+            notify-send "HyprFlux" "Installing $_aur_pkg..." 2>/dev/null || true
+            yay -S --noconfirm "$_aur_pkg" &>/dev/null
+            if yay -Q "$_aur_pkg" &>/dev/null; then
+                notify-send "HyprFlux" "$_aur_pkg installed." 2>/dev/null || true
+            else
+                notify-send "HyprFlux" "$_aur_pkg STILL failed — run: yay -S $_aur_pkg" 2>/dev/null || true
             fi
-        done
-        unset _aur_pkg
-    fi
+        fi
+    done
+    unset _aur_pkg AUR_PACKAGES
 fi
 
 # Mark as done
@@ -605,7 +607,8 @@ echo "    First-boot fixup created."
 echo ""
 echo "==> Cleanup"
 
-# Remove temporary sudoers entry
+# Remove temporary sudoers entry (the narrow pacman rule stays for the
+# desktop session's AUR helper — intentional)
 rm -f /etc/sudoers.d/hyprflux-temp
 
 # Remove shim scripts
