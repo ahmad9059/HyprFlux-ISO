@@ -1,0 +1,11 @@
+NAME="HyprFlux"
+PRETTY_NAME="HyprFlux Live (Arch Linux)"
+ID=hyprflux
+BUILD_ID=rolling
+ANSI_COLOR="38;2;169;86;255"
+HOME_URL="https://github.com/ahmad9059/HyprFlux"
+DOCUMENTATION_URL="https://github.com/ahmad9059/HyprFlux"
+SUPPORT_URL="https://github.com/ahmad9059/HyprFlux/issues"
+BUG_REPORT_URL="https://github.com/ahmad9059/HyprFlux/issues"
+PRIVACY_POLICY_URL="https://github.com/ahmad9059/HyprFlux"
+LOGO=hyprflux-logo
