@@ -750,6 +750,10 @@ step_configure_system() {
         arch-chroot "$MOUNT_POINT" ln -sf "/usr/share/zoneinfo/${INSTALL_TIMEZONE}" /etc/localtime
         # hwclock can fail in VMs/containers without an RTC device — non-fatal.
         arch-chroot "$MOUNT_POINT" hwclock --systohc 2>/dev/null || true
+        # CRITICAL: force the chroot clock from the live env. pacman PGP
+        # signature windows (chaotic-aur, mirrors) fail instantly on a wrong
+        # clock, and a broken hwclock leaves the target in the past.
+        arch-chroot "$MOUNT_POINT" date -s "@$(date +%s)" 2>/dev/null || true
 
         # -------------------------------------------------------------------
         # Locale configuration
@@ -987,9 +991,15 @@ step_install_hyprflux() {
     #   Phase B: HyprFlux dotfiles modules 01-16
     #   Phase C: enable sddm/bluetooth/NetworkManager + graphical.target
     #   Phase D: first-boot autostart fixup (gsettings/nwg-look/pipewire)
+    #
+    # NOTE: the wrapper goes to /root, NOT /tmp — arch-chroot mounts a fresh
+    # tmpfs over the target's /tmp (arch-install-scripts chroot_add_mount
+    # "tmp $1/tmp"), so anything copied to ${MOUNT_POINT}/tmp is invisible
+    # inside the chroot (bash exits 127 "No such file or directory").
     mkdir -p "${user_home}/HyprFlux/logs"
-    cp "${SCRIPT_DIR}/lib/hyprflux-chroot-wrapper.sh" "${MOUNT_POINT}/tmp/hyprflux-chroot-wrapper.sh"
-    chmod 755 "${MOUNT_POINT}/tmp/hyprflux-chroot-wrapper.sh"
+    cp "${SCRIPT_DIR}/lib/hyprflux-chroot-wrapper.sh" \
+        "${MOUNT_POINT}/root/hyprflux-chroot-wrapper.sh"
+    chmod 755 "${MOUNT_POINT}/root/hyprflux-chroot-wrapper.sh"
 
     show_banner
     set_status "Installing HyprFlux (packages, config, themes)..."
@@ -1001,14 +1011,15 @@ step_install_hyprflux() {
 
     set +e
     (
-        arch-chroot "$MOUNT_POINT" /bin/bash /tmp/hyprflux-chroot-wrapper.sh             "${INSTALL_USERNAME}" "${INSTALL_HAS_NVIDIA}"
+        arch-chroot "$MOUNT_POINT" /bin/bash /root/hyprflux-chroot-wrapper.sh \
+            "${INSTALL_USERNAME}" "${INSTALL_HAS_NVIDIA}"
     ) | tee "${wrapper_log}" >> "$PROGRESS_LOG" 2>&1
     local wrapper_status=${PIPESTATUS[0]}
     set -e
 
     stop_progress
 
-    rm -f "${MOUNT_POINT}/tmp/hyprflux-chroot-wrapper.sh"
+    rm -f "${MOUNT_POINT}/root/hyprflux-chroot-wrapper.sh"
     chown "${INSTALL_USERNAME}:${INSTALL_USERNAME}" "${wrapper_log}" 2>/dev/null || true
 
     if [[ $wrapper_status -ne 0 ]]; then

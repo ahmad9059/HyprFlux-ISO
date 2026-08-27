@@ -32,6 +32,7 @@ ISO_FILE=""
 RAM="8G"
 CPUS="4"
 DISPLAY_MODE="auto"          # auto | gl | software | headless
+SERIAL_MODE=false           # --serial: guest console on the terminal (paste-friendly)
 # Default test disk lives next to the script (user-writable). Override with --disk=.
 DISK_IMAGE="${SCRIPT_DIR}/hyprflux-test-disk.qcow2"
 USE_VNC=false
@@ -61,6 +62,13 @@ for arg in "$@"; do
   --vnc)
     USE_VNC=true
     ;;
+  --serial)
+    # Guest console on the terminal (stdio). Copy/paste from the host works
+    # natively: select text on the host and paste into this terminal — it
+    # goes straight into the guest console (ttyS0 autologin runs the
+    # installer there too).
+    SERIAL_MODE=true
+    ;;
   --disk=*)
     DISK_IMAGE="${arg#--disk=}"
     ;;
@@ -82,6 +90,8 @@ for arg in "$@"; do
     echo "  --gl          GTK window with OpenGL acceleration (default when"
     echo "                a display is available and GL works)"
     echo "  --vnc         Also expose VNC on :0 (works with --headless)"
+    echo "  --serial      Guest console on the terminal - host copy/paste works"
+    echo "                natively (installer auto-launches on ttyS0)"
     echo "  --disk=PATH   Test disk path (default: ./hyprflux-test-disk.qcow2)"
     echo "  --ram=SIZE    RAM size (default: 8G)"
     echo "  --cpus=N      Number of CPUs (default: 4)"
@@ -206,14 +216,28 @@ build_qemu_cmd() {
     fi
     ;;
   software)
-    QEMU_CMD+=(-display gtk)
+    QEMU_CMD+=(-display gtk,show-menubar=off,show-tabs=off)
     QEMU_CMD+=(-device virtio-vga)
     ;;
   gl)
-    QEMU_CMD+=(-display gtk,gl=on)
+    QEMU_CMD+=(-display gtk,gl=on,show-menubar=off,show-tabs=off)
     QEMU_CMD+=(-device virtio-vga-gl)
     ;;
   esac
+
+  # Serial console on the terminal (for modes that don't already have it):
+  # enables host->guest copy/paste through the terminal emulator.
+  if [[ "${SERIAL_MODE}" == true ]] && [[ "${mode}" != "headless" ]]; then
+    QEMU_CMD+=(-serial stdio -monitor none)
+  fi
+
+  # SPICE vdagent channel - clipboard sharing with graphical sessions inside
+  # the guest (needs spice-vdagent in the guest; the live ISO ships it now).
+  QEMU_CMD+=(
+    -device virtio-serial-pci
+    -chardev qemu-vdagent,id=vdagent,clipboard=on,name=vdagent
+    -device virtserialport,chardev=vdagent,name=com.redhat.spice.0
+  )
 
   QEMU_CMD+=(
     -device virtio-net-pci,netdev=net0

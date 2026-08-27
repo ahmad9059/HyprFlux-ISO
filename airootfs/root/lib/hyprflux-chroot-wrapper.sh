@@ -280,6 +280,28 @@ if [[ -f "${INSTALL_SCRIPTS}/Global_functions.sh" ]]; then
 fi
 run_as_user "${INSTALL_SCRIPTS}/01-hypr-pkgs.sh"
 
+# A4b: Post-check AUR packages — if any failed inside the chroot (AUR access
+# is the most fragile step: RPC query, PKGBUILD clone, source builds), show
+# the actual yay error from the install log so it is visible in the TUI, and
+# note that the first-boot fixup (Phase D) will retry them on the desktop.
+AUR_PACKAGES=(mpvpaper waybar-git visual-studio-code-bin 64gram-desktop-bin vesktop \
+              foliate localsend-bin tuxedo-bin claude-code opencode-bin openai-codex-bin \
+              freedownloadmanager)
+AUR_MISSING=()
+for _aur_pkg in "${AUR_PACKAGES[@]}"; do
+  if ! su - "${TARGET_USER}" -s /bin/bash -c "command -v yay >/dev/null 2>&1 && yay -Q $_aur_pkg >/dev/null 2>&1" 2>/dev/null; then
+    AUR_MISSING+=("$_aur_pkg")
+  fi
+done
+if [ ${#AUR_MISSING[@]} -gt 0 ]; then
+  echo "    [WARN] AUR packages missing after Phase A: ${AUR_MISSING[*]}"
+  echo "           They will be retried at first boot (desktop session)."
+  echo "           Last lines of the install log for diagnosis:"
+  _pkg_log="${TARGET_HOME}/HyprFlux/logs/installer/"*_hypr-pkgs.log
+  tail -25 ${_pkg_log} 2>/dev/null | sed 's/^/           /'
+fi
+unset _aur_pkg AUR_PACKAGES AUR_MISSING _pkg_log
+
 # A5: PipeWire audio
 echo "[A5] Installing PipeWire audio stack..."
 run_as_user "${INSTALL_SCRIPTS}/pipewire.sh"
@@ -532,6 +554,30 @@ fi
 systemctl --user enable --now pipewire.socket 2>/dev/null || true
 systemctl --user enable --now pipewire-pulse.socket 2>/dev/null || true
 systemctl --user enable --now wireplumber.service 2>/dev/null || true
+
+# Retry AUR packages that failed inside the chroot (AUR access is the most
+# fragile install step). In the desktop session we have full network, a
+# working user session and yay — the same packages install reliably here.
+if command -v yay &>/dev/null; then
+    # Read the package list from the repo (single source of truth)
+    AUR_LIST_FILE="$HOME/HyprFlux/base-installer/install-scripts/01-hypr-pkgs.sh"
+    if [[ -f "$AUR_LIST_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$AUR_LIST_FILE"
+        for _aur_pkg in "${hypr_aur_package[@]}"; do
+            if ! yay -Q "$_aur_pkg" &>/dev/null; then
+                notify-send "HyprFlux" "Installing $_aur_pkg (retry from chroot)..." 2>/dev/null || true
+                yay -S --noconfirm "$_aur_pkg" &>/dev/null
+                if yay -Q "$_aur_pkg" &>/dev/null; then
+                    notify-send "HyprFlux" "$_aur_pkg installed." 2>/dev/null || true
+                else
+                    notify-send "HyprFlux" "$_aur_pkg STILL failed — run: yay -S $_aur_pkg" 2>/dev/null || true
+                fi
+            fi
+        done
+        unset _aur_pkg
+    fi
+fi
 
 # Mark as done
 mkdir -p "$(dirname "$MARKER")"
