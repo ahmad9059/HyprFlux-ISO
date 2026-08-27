@@ -227,7 +227,7 @@ build_qemu_cmd() {
 
   # Serial console on the terminal (for modes that don't already have it):
   # enables host->guest copy/paste through the terminal emulator.
-  if [[ "${SERIAL_MODE}" == true ]] && [[ "${mode}" != "headless" ]]; then
+  if [[ "${SERIAL_MODE:-false}" == true ]] && [[ "${mode}" != "headless" ]]; then
     QEMU_CMD+=(-serial stdio -monitor none)
   fi
 
