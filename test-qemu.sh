@@ -209,7 +209,11 @@ build_qemu_cmd() {
   headless)
     # No window: the installer's TUI is fully usable over the serial
     # console (ttyS0 autologin), so stdio is interactive.
-    QEMU_CMD+=(-display none -serial stdio -monitor none)
+    # NOTE: -serial alone no longer attaches the ISA serial device on
+    # modern QEMU (11.x) — the guest never gets /dev/ttyS0. Explicit pair.
+    QEMU_CMD+=(-display none -monitor none)
+    QEMU_CMD+=(-chardev stdio,id=serial0,mux=off)
+    QEMU_CMD+=(-device isa-serial,chardev=serial0)
     QEMU_CMD+=(-device virtio-vga)
     if [[ "${USE_VNC}" == true ]]; then
       QEMU_CMD+=(-vnc :0)
@@ -228,7 +232,9 @@ build_qemu_cmd() {
   # Serial console on the terminal (for modes that don't already have it):
   # enables host->guest copy/paste through the terminal emulator.
   if [[ "${SERIAL_MODE:-false}" == true ]] && [[ "${mode}" != "headless" ]]; then
-    QEMU_CMD+=(-serial stdio -monitor none)
+    QEMU_CMD+=(-chardev stdio,id=serial0,mux=off)
+    QEMU_CMD+=(-device isa-serial,chardev=serial0)
+    QEMU_CMD+=(-monitor none)
   fi
 
   # SPICE vdagent channel - clipboard sharing with graphical sessions inside

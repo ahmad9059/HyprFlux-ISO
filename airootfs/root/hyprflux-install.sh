@@ -1090,17 +1090,62 @@ step_install_hyprflux() {
         die "HyprFlux installation failed. See ${wrapper_log}"
     fi
 
-    # Bootability verification: grub.cfg MUST carry a root=UUID= entry or
-    # the kernel cannot mount the root filesystem at boot (emergency mode).
-    # Surface it BEFORE the user reboots instead of after.
+    # Bootability verification BEFORE the user reboots — the #1 cause of the
+    # post-install emergency mode is a root device the kernel can't find.
+    # Check all three links in the chain: grub.cfg root= UUID, the real
+    # partition UUID, and the disk modules inside the initramfs.
     show_banner
     set_status "Verifying bootability..."
-    if grep -q "root=UUID=" "${MOUNT_POINT}/boot/grub/grub.cfg" 2>/dev/null; then
-        log_ok "GRUB root=UUID entry present — system is bootable."
+    _boot_ok=true
+
+    _root_uuid=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null)
+    _grub_root=$(grep -oE 'root=UUID=[a-fA-F0-9-]+' "${MOUNT_POINT}/boot/grub/grub.cfg" 2>/dev/null | head -1 | cut -d= -f3)
+
+    if [[ -n "$_grub_root" ]] && [[ "$_grub_root" == "$_root_uuid" ]]; then
+        log_ok "GRUB root=UUID matches the root partition ($_root_uuid)."
     else
-        log_warn "No root=UUID= entry found in grub.cfg — system may NOT boot."
-        log_warn "Run manually in the chroot: grub-mkconfig -o /boot/grub/grub.cfg"
+        _boot_ok=false
+        log_warn "GRUB root=UUID ($_grub_root) does NOT match root partition ($_root_uuid)."
+        log_warn "Fix in chroot: grub-mkconfig -o /boot/grub/grub.cfg"
     fi
+
+    if lsinitcpio "${MOUNT_POINT}/boot/initramfs-linux.img" 2>/dev/null \
+        | grep -qE 'virtio_blk|nvme|ahci|sd_mod'; then
+        log_ok "Initramfs contains disk modules."
+    else
+        _boot_ok=false
+        log_warn "Initramfs MISSING disk modules (virtio/nvme/ahci) — root device may not appear at boot."
+        log_warn "Fix in chroot: MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci) in mkinitcpio.conf + mkinitcpio -P"
+    fi
+
+    if [[ "$_boot_ok" == true ]]; then
+        log_ok "Bootability verified — safe to reboot."
+    else
+        tui_error "Bootability issues found — the system may drop to emergency mode."
+        tui_print "The debug shell is available: exit it to continue to reboot anyway."
+    fi
+    unset _boot_ok _root_uuid _grub_root
+
+    # Leave a boot-debug cheat-sheet in the installed system: if the first
+    # boot still lands in emergency mode, these commands (run from the live
+    # ISO, which auto-mounts to /mnt/archinstall) reveal the broken link.
+    cat > "${MOUNT_POINT}/root/boot-debug.txt" << 'DEBUG_EOF'
+If the installed system drops to emergency mode, boot the live ISO and run:
+
+  arch-chroot /mnt/archinstall /bin/bash -c "
+    grep -oE 'root=UUID=[a-f0-9-]+' /boot/grub/grub.cfg | head -2
+    blkid | grep -E 'ext4|swap'
+    cat /etc/fstab
+    grep '^MODULES' /etc/mkinitcpio.conf
+    lsinitcpio /boot/initramfs-linux.img | grep -oE 'virtio_blk|nvme|ahci' | sort -u
+    passwd -S root
+  "
+
+Common causes:
+- grub.cfg root=UUID != real UUID  -> chroot: grub-mkconfig -o /boot/grub/grub.cfg
+- initramfs missing disk modules   -> MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci) + mkinitcpio -P
+- root locked                      -> chroot: passwd root
+DEBUG_EOF
     tui_wait "" 1
 }
 
