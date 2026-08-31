@@ -52,6 +52,7 @@ archiso's `mkarchiso` automatically replaces these template variables at build t
 | 7 | `syslinux/archiso_head.cfg` | ~25 | Syslinux header/styling |
 | 8 | `syslinux/archiso_tail.cfg` | ~10 | Syslinux footer (reboot/poweroff) |
 | 9 | `syslinux/archiso_sys.cfg` | ~5 | Syslinux system include file |
+| 10 | `syslinux/splash.png` | 640x480 | HyprFlux BIOS menu background |
 
 ---
 
@@ -160,7 +161,7 @@ menuentry "System restart" --class restart {
 
 ---
 
-### 5-9. Syslinux Configuration (Modular Structure)
+### 5-10. Syslinux Configuration (Modular Structure)
 
 Following the releng profile's modular approach instead of a single flat file.
 
@@ -182,8 +183,9 @@ INCLUDE archiso_sys-linux.cfg
 
 ```ini
 SERIAL 0 115200
-UI menu.c32
+UI vesamenu.c32
 MENU TITLE HyprFlux Installer
+MENU BACKGROUND splash.png
 
 MENU COLOR border       30;44   #40ffffff #a0000000 std
 MENU COLOR title        1;36;44 #9033ccff #a0000000 std
@@ -203,6 +205,9 @@ MENU HELPMSGENDROW -1
 TIMEOUT 150
 DEFAULT hyprflux
 ```
+
+`splash.png` is a dedicated 640x480, non-interlaced RGB PNG. Keeping the
+default Syslinux resolution maximizes compatibility with legacy VESA firmware.
 
 #### `syslinux/archiso_sys-linux.cfg` (boot entries)
 
@@ -265,7 +270,8 @@ hyprflux-iso/
 │   ├── archiso_sys.cfg
 │   ├── archiso_sys-linux.cfg
 │   ├── archiso_head.cfg
-│   └── archiso_tail.cfg
+│   ├── archiso_tail.cfg
+│   └── splash.png
 ├── plans/
 ├── instructions.md
 ├── test-qemu.sh

@@ -1104,7 +1104,7 @@ step_install_hyprflux() {
     (
         arch-chroot "$MOUNT_POINT" /bin/bash /root/hyprflux-chroot-wrapper.sh \
             "${INSTALL_USERNAME}" "${INSTALL_HAS_NVIDIA}"
-    ) | tee "${wrapper_log}" >> "$PROGRESS_LOG" 2>&1
+    ) 2>&1 | tee "${wrapper_log}" >> "$PROGRESS_LOG" 2>&1
     local wrapper_status=${PIPESTATUS[0]}
     set -e
 

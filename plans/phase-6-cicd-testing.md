@@ -375,7 +375,6 @@ hyprflux-iso/
 1. **Pre-built AUR packages** -- bake wallust, wlogout, etc. into the ISO (Approach B, infrastructure already in workflow)
 2. **Offline mode** -- include all packages in the ISO for no-internet installs
 3. **Custom kernel** -- linux-zen or custom config for better desktop performance
-4. **Themed boot screen** -- Custom GRUB/syslinux theme with HyprFlux branding
-5. **Automated testing** -- QEMU + expect scripts for CI smoke tests
-6. **Secure Boot** -- Sign the ISO for Secure Boot compatibility
-7. **A/B update system** -- In-place updates without re-installing
+4. **Automated testing** -- QEMU + expect scripts for CI smoke tests
+5. **Secure Boot** -- Sign the ISO for Secure Boot compatibility
+6. **A/B update system** -- In-place updates without re-installing
