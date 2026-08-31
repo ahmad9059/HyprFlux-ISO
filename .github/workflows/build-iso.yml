@@ -28,13 +28,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Shell syntax check (installer + TUI)
+      - name: Shell syntax and boot-contract checks
         run: |
           FAIL=0
           while IFS= read -r -d '' f; do
             bash -n "$f" 2>/dev/null || { echo "BASH SYNTAX FAIL: $f"; FAIL=1; }
           done < <(find airootfs -name '*.sh' -print0)
+          bash -n test-qemu.sh 2>/dev/null || { echo "BASH SYNTAX FAIL: test-qemu.sh"; FAIL=1; }
           [ $FAIL -eq 0 ] || exit 1
+          grep -q 'systemctl reboot --force --force' airootfs/root/hyprflux-install.sh
+          grep -q 'boot once=d' test-qemu.sh
+          grep -q -- '--removable' airootfs/root/hyprflux-install.sh
+          grep -Eq 'HYPRFLUX_REF="[0-9a-f]{40}"' airootfs/root/hyprflux-install.sh
           echo "All installer scripts parse OK"
 
       - name: Build ISO

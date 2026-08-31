@@ -100,7 +100,9 @@ All plans are in `plans/` at repo root. There are 6 phases:
 
 - **install_dir = "hyprflux"** (not default "arch") -- requires `archisobasedir=%INSTALL_DIR%` on all boot cmdlines
 - **NetworkManager only** -- no systemd-networkd (needed for nmcli/nmtui in installer)
-- **systemctl shim** in chroot: strips `--now`, skips runtime verbs, attempts `--user enable`
+- **Real systemctl only in chroot**: systemctl detects offline/chroot operation;
+  never replace `/usr/bin/systemctl`, because mkinitcpio copies it into
+  systemd-based initramfs images
 - **chsh shim** in chroot: no-op script (shell pre-set via `usermod`)
 - **gsettings/nwg-look shims** in chroot: actual scripts in `/usr/local/bin/` (not function exports, which don't survive `su -`)
 - **NVIDIA detection** happens BEFORE chroot (needs live PCI bus, `lspci`)
@@ -119,7 +121,6 @@ The chroot wrapper installs temporary shims to handle operations that fail in ch
 
 | Shim | Location | Purpose |
 |------|----------|---------|
-| systemctl | `/usr/bin/systemctl` (replaces real) | Strips --now, skips runtime verbs |
 | chsh | `/usr/local/bin/chsh` | No-op (shell set via usermod) |
 | gsettings | `/usr/local/bin/gsettings` | No-op (deferred to first-boot) |
 | nwg-look | `/usr/local/bin/nwg-look` | No-op (no display in chroot) |
@@ -143,6 +144,7 @@ sudo bash build.sh
 # Test in QEMU
 ./test-qemu.sh --uefi    # UEFI boot test
 ./test-qemu.sh --bios    # Legacy BIOS boot test
+./test-qemu.sh --boot-disk # Boot existing installed qcow2 without recreating it
 ```
 
 ## Conventions

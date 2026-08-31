@@ -183,10 +183,24 @@ Legacy BIOS test:
 ./test-qemu.sh --bios
 ```
 
+Boot the existing installed disk without attaching the ISO or recreating it:
+
+```bash
+./test-qemu.sh --boot-disk --software
+```
+
+Test UEFI fallback boot with a fresh OVMF variable store:
+
+```bash
+./test-qemu.sh --boot-disk --fresh-vars --software
+```
+
 Test characteristics:
 
 - creates a fresh `40G` qcow2 disk image for each run
-- uses OVMF for UEFI testing
+- boots installation media once, then prioritizes the installed disk
+- preserves OVMF variables beside the qcow2 for repeat boots
+- refuses stale ISOs whose profile source files are newer
 - boots the most recent ISO from `out/` if no path is provided
 - attaches virtio graphics, network, and storage devices
 

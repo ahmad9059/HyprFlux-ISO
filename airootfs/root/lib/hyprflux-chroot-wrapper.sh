@@ -70,71 +70,23 @@ echo ""
 echo "==> Phase 0: Setting up chroot environment..."
 
 # --- Crash recovery ---
-# If a previous wrapper run died mid-Phase-A (power loss, OOM), the systemctl
-# shim may still be in place. Restore the real binary before installing a
-# fresh shim so nothing gets double-wrapped.
+# If an older wrapper died mid-Phase-A, its systemctl shim may still be in
+# place. Restore the real binary before any module can rebuild the initramfs.
 if [[ -f /usr/bin/systemctl.real ]]; then
     cp /usr/bin/systemctl.real /usr/bin/systemctl
     rm -f /usr/bin/systemctl.real
     echo "    [Recovery] Restored real systemctl from a previous interrupted run."
 fi
-
-# --- systemctl shim ---
-# Replaces systemctl so that:
-#   - "enable --now" becomes "enable" (strips --now)
-#   - Runtime verbs (start/stop/restart/is-active/status) are skipped
-#   - --user commands are attempted but may fail silently
-cat > /usr/local/bin/systemctl-shim << 'SHIM_EOF'
-#!/bin/bash
-# systemctl shim for chroot environment
-# IMPORTANT: calls /usr/bin/systemctl.real (the original binary),
-# NOT /usr/bin/systemctl (which is this shim) to avoid infinite recursion.
-args=("$@")
-filtered=()
-has_runtime_verb=false
-has_user=false
-
-for arg in "${args[@]}"; do
-    case "$arg" in
-        start|stop|restart|is-active|status|reload|daemon-reload|daemon-reexec)
-            has_runtime_verb=true
-            filtered+=("$arg")
-            ;;
-        --now)
-            # Strip --now flag entirely
-            ;;
-        --user)
-            has_user=true
-            filtered+=("$arg")
-            ;;
-        *)
-            filtered+=("$arg")
-            ;;
-    esac
-done
-
-# Skip runtime commands entirely (they fail in chroot with no PID 1)
-if [[ "$has_runtime_verb" == true ]]; then
-    echo "[shim] Skipping runtime verb: systemctl ${args[*]}" >&2
-    exit 0
+if ! file -L /usr/bin/systemctl 2>/dev/null | grep -q 'ELF'; then
+    echo "    [ERROR] /usr/bin/systemctl is not the real ELF binary; aborting before initramfs generation." >&2
+    exit 1
 fi
 
-# For --user commands: attempt but don't fail hard
-if [[ "$has_user" == true ]]; then
-    /usr/bin/systemctl.real "${filtered[@]}" 2>/dev/null || true
-    exit 0
-fi
-
-# For system-level "enable" commands, use the real systemctl binary
-/usr/bin/systemctl.real "${filtered[@]}"
-SHIM_EOF
-chmod +x /usr/local/bin/systemctl-shim
-
-# Backup real systemctl and install shim
-if [[ ! -f /usr/bin/systemctl.real ]]; then
-    cp /usr/bin/systemctl /usr/bin/systemctl.real
-fi
-cp /usr/local/bin/systemctl-shim /usr/bin/systemctl
+# Never replace /usr/bin/systemctl. mkinitcpio's systemd hook copies that
+# executable into the initramfs; copying a shell shim there breaks
+# initrd-cleanup.service because systemctl.real is not included in the image.
+# Real systemctl detects chroot/offline operation and safely skips runtime work.
+rm -f /usr/local/bin/systemctl-shim
 
 # --- chsh shim ---
 # Shell is already set via usermod; chsh would hang in chroot due to PAM
@@ -461,13 +413,6 @@ echo "    Phase B complete."
 echo ""
 echo "==> Phase C: Enabling system services"
 
-# Restore real systemctl BEFORE trying to use it
-if [[ -f /usr/bin/systemctl.real ]]; then
-    cp /usr/bin/systemctl.real /usr/bin/systemctl
-    rm -f /usr/bin/systemctl.real
-    echo "    Real systemctl restored."
-fi
-
 # Now that zsh has been installed by Phase A, switch user shell to zsh
 if command -v zsh &>/dev/null; then
     usermod -s "$(command -v zsh)" "${TARGET_USER}" 2>/dev/null \
@@ -612,7 +557,6 @@ echo "==> Cleanup"
 rm -f /etc/sudoers.d/hyprflux-temp
 
 # Remove shim scripts
-rm -f /usr/local/bin/systemctl-shim
 rm -f /usr/local/bin/chsh
 rm -f /usr/local/bin/gsettings
 rm -f /usr/local/bin/nwg-look

@@ -32,3 +32,5 @@ skills-lock.json
 /tmp/hyprflux-*.qcow2
 /tmp/hyprflux-*.fd
 hyprflux-test-disk.qcow2
+*.qcow2.ovmf-vars.fd
+*.qcow2.lock

@@ -44,7 +44,7 @@ ISO Installer (Phase 4)
         └─ arch-chroot → hyprflux-chroot-wrapper.sh
               │
               ├─ Install sudo shim (wraps sudo to just run commands)
-              ├─ Install systemctl shim (strips --now, skips runtime verbs)
+              ├─ Keep real systemctl (it detects chroot/offline operation)
               ├─ Install chsh shim (no-op, shell set via usermod)
               ├─ Install gsettings/nwg-look shims (no dbus in chroot)
               │
@@ -53,11 +53,11 @@ ISO Installer (Phase 4)
               │   ├─ pacman.sh
               │   ├─ yay.sh (as target user, makepkg)
               │   ├─ 01-hypr-pkgs.sh
-              │   ├─ pipewire.sh (with systemctl shim)
+              │   ├─ pipewire.sh (runtime user operations may defer)
               │   ├─ fonts.sh
               │   ├─ hyprland.sh
-              │   ├─ bluetooth.sh (with systemctl shim)
-              │   ├─ sddm.sh (with systemctl shim)
+              │   ├─ bluetooth.sh (real systemctl in offline mode)
+              │   ├─ sddm.sh (real systemctl in offline mode)
               │   ├─ nvidia.sh (if HAS_NVIDIA=yes)
               │   ├─ zsh.sh (with chsh shim)
               │   ├─ thunar.sh (file manager)
@@ -166,7 +166,9 @@ $2 = HAS_NVIDIA ("yes" or "no")
 ### Design Principles
 
 1. **No whiptail** — all components are pre-selected (the ISO installer already collected user preferences)
-2. **systemctl shim** — strips `--now` flag, skips runtime verbs (start/stop/restart/is-active/status), attempts `--user enable` (may fail silently)
+2. **Real systemctl only** — never replace `/usr/bin/systemctl`; mkinitcpio's
+   systemd hook copies it into the initramfs. systemctl already detects
+   chroot/offline operation and skips runtime work safely.
 3. **chsh shim** — returns success immediately (shell already set via `usermod`)
 4. **gsettings/nwg-look shims** — script files in `/usr/local/bin/` (not function exports, which don't survive `su -`)
 5. **sudo shim** — when running as target user, sudo is pre-configured to not require password
@@ -195,70 +197,9 @@ echo "    NVIDIA: ${HAS_NVIDIA}"
 # PHASE 0: Install shims and prepare environment
 # ================================================================
 
-# --- systemctl shim ---
-# Replaces systemctl so that:
-#   "enable --now" becomes "enable" (strips --now, no running systemd in chroot)
-#   "start", "stop", "restart", "is-active", "status" are silently skipped
-#   "--user" + runtime verbs are skipped (no user dbus session)
-#   "--user enable" is ATTEMPTED (creates symlink, may fail silently)
-#   "enable" (without --now) works normally
-cat > /usr/local/bin/systemctl-shim << 'SHIM_EOF'
-#!/bin/bash
-# systemctl shim for chroot environment
-#
-# Logic:
-#   1. Runtime verbs (start/stop/restart/is-active/status) → always skip
-#   2. --now flag → strip it (convert "enable --now" to "enable")
-#   3. --user + runtime verb → skip
-#   4. --user + enable → attempt (may fail, that's ok — first-boot handles it)
-#   5. Everything else → pass through to real systemctl
-args=("$@")
-filtered=()
-has_runtime_verb=false
-has_user=false
-
-for arg in "${args[@]}"; do
-    case "$arg" in
-        start|stop|restart|is-active|status)
-            has_runtime_verb=true
-            filtered+=("$arg")
-            ;;
-        --now)
-            # Strip --now flag entirely
-            ;;
-        --user)
-            has_user=true
-            filtered+=("$arg")
-            ;;
-        *)
-            filtered+=("$arg")
-            ;;
-    esac
-done
-
-# Skip runtime commands entirely (with or without --user)
-if [[ "$has_runtime_verb" == true ]]; then
-    echo "[chroot-shim] Skipping runtime: systemctl ${args[*]}" >&2
-    exit 0
-fi
-
-# For --user enable: attempt it but don't fail hard
-# (user systemd instance isn't running, but the symlink creation might work)
-if [[ "$has_user" == true ]]; then
-    echo "[chroot-shim] Attempting --user enable (may fail): systemctl ${filtered[*]}" >&2
-    /usr/bin/systemctl "${filtered[@]}" 2>/dev/null || true
-    exit 0
-fi
-
-# For system-level "enable" commands, use the real systemctl
-/usr/bin/systemctl "${filtered[@]}"
-SHIM_EOF
-chmod +x /usr/local/bin/systemctl-shim
-
-# Temporarily override systemctl
-# (save the real one, replace with shim, restore at end)
-cp /usr/bin/systemctl /usr/bin/systemctl.real
-cp /usr/local/bin/systemctl-shim /usr/bin/systemctl
+# Keep /usr/bin/systemctl untouched. It detects chroot/offline operation.
+# Replacing it is unsafe because mkinitcpio's systemd hook copies systemctl
+# into the initramfs for initrd-cleanup.service.
 
 # --- Ensure sudo works for target user without password (temporary) ---
 echo "${TARGET_USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/hyprflux-temp
@@ -501,10 +442,6 @@ done
 
 echo "==> Phase C: Enabling system services"
 
-# Restore real systemctl
-cp /usr/bin/systemctl.real /usr/bin/systemctl
-rm -f /usr/bin/systemctl.real /usr/local/bin/systemctl-shim
-
 systemctl enable sddm 2>/dev/null || true
 systemctl enable bluetooth 2>/dev/null || true
 systemctl enable NetworkManager 2>/dev/null || true
@@ -607,9 +544,12 @@ step_cleanup_reboot() {
     # Sync filesystem
     sync
     
-    # Unmount in reverse order
-    umount -R "$MOUNT_POINT" 2>/dev/null || true
-    swapoff --all 2>/dev/null || true
+    # Cleanup is mandatory before bypassing the faulty live shutdown ramfs.
+    umount -R "$MOUNT_POINT" || return 1
+    findmnt -R "$MOUNT_POINT" &>/dev/null && return 1
+    swapoff --all || return 1
+    [[ -z "$(swapon --show=NAME --noheadings)" ]] || return 1
+    sync
     
     log_ok "Partitions unmounted."
     
@@ -632,7 +572,7 @@ Enjoy HyprFlux!" 18 58
     set_status "Rebooting..."
     log_ok "Rebooting in 5 seconds..."
     sleep 5
-    reboot
+    systemctl reboot --force --force || reboot -f
 }
 ```
 

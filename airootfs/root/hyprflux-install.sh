@@ -36,6 +36,7 @@ INSTALL_PASSWORD=""
 INSTALL_DISK=""
 INSTALL_BOOT_MODE=""
 INSTALL_HAS_NVIDIA="no"
+HYPRFLUX_REF="558d17074a6d8933ae5c837d209571ab97642520"
 USE_SWAP=false
 SWAP_SIZE=0
 
@@ -79,10 +80,13 @@ set_status "Initializing..."
 # of the installer does not fail with "already mounted".
 if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
     log_warn "Stale mount detected at $MOUNT_POINT — unmounting..."
-    umount -R "$MOUNT_POINT" 2>/dev/null || true
+    umount -R "$MOUNT_POINT" 2>/dev/null || die "Could not unmount stale target at $MOUNT_POINT."
 fi
 if mountpoint -q "${MOUNT_POINT}/boot" 2>/dev/null; then
-    umount "${MOUNT_POINT}/boot" 2>/dev/null || true
+    umount "${MOUNT_POINT}/boot" 2>/dev/null || die "Could not unmount stale target boot partition."
+fi
+if findmnt -R "$MOUNT_POINT" &>/dev/null; then
+    die "Target still has active mounts after cleanup; refusing to partition disks."
 fi
 swapoff -a 2>/dev/null || true
 
@@ -947,6 +951,25 @@ LSB_RELEASE_EOF
                     grub_ok=true
                 fi
             fi
+
+            # Also install the standardized fallback loader. This makes the
+            # disk bootable when firmware NVRAM is reset (new QEMU OVMF vars,
+            # motherboard reset, or moving the disk to another machine).
+            if [[ "$grub_ok" == true ]]; then
+                if arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi \
+                    --efi-directory=/boot --bootloader-id=GRUB --removable 2>&1; then
+                    printf 'NOTE: installed UEFI fallback loader at EFI/BOOT/BOOTX64.EFI.\n'
+                else
+                    printf 'ERROR: GRUB NVRAM install succeeded but fallback loader installation failed.\n'
+                    grub_ok=false
+                fi
+            fi
+            if [[ "$grub_ok" == true ]] && \
+                { [[ ! -s "${MOUNT_POINT}/boot/EFI/GRUB/grubx64.efi" ]] || \
+                  [[ ! -s "${MOUNT_POINT}/boot/EFI/BOOT/BOOTX64.EFI" ]]; }; then
+                printf 'ERROR: one or more UEFI GRUB loader files are missing or empty.\n'
+                grub_ok=false
+            fi
         else
             if arch-chroot "$MOUNT_POINT" grub-install --target=i386-pc "${INSTALL_DISK}" 2>&1; then
                 grub_ok=true
@@ -1020,8 +1043,13 @@ step_install_hyprflux() {
         local _clone_ok=false
         while (( _clone_attempt < 3 )); do
             _clone_attempt=$((_clone_attempt + 1))
-            printf '==> Cloning HyprFlux repository (attempt %d/3)...\n' "$_clone_attempt"
-            if timeout 300 git clone --depth=1 https://github.com/ahmad9059/HyprFlux.git "${user_home}/HyprFlux" 2>&1; then
+            printf '==> Fetching pinned HyprFlux revision %s (attempt %d/3)...\n' "$HYPRFLUX_REF" "$_clone_attempt"
+            mkdir -p "${user_home}/HyprFlux"
+            if git -C "${user_home}/HyprFlux" init -q 2>&1 \
+                && git -C "${user_home}/HyprFlux" remote add origin https://github.com/ahmad9059/HyprFlux.git 2>&1 \
+                && timeout 300 git -C "${user_home}/HyprFlux" fetch --depth=1 origin "$HYPRFLUX_REF" 2>&1 \
+                && git -C "${user_home}/HyprFlux" checkout -q --detach FETCH_HEAD 2>&1 \
+                && [[ "$(git -C "${user_home}/HyprFlux" rev-parse HEAD)" == "$HYPRFLUX_REF" ]]; then
                 _clone_ok=true
                 break
             fi
@@ -1033,7 +1061,7 @@ step_install_hyprflux() {
             printf 'ERROR: Failed to clone HyprFlux after 3 attempts\n'
             exit 1
         fi
-        printf '==> HyprFlux cloned successfully\n'
+        printf '==> HyprFlux revision %s checked out successfully\n' "$HYPRFLUX_REF"
     ) >> "$PROGRESS_LOG" 2>&1
     local clone_status=$?
     set -e
@@ -1043,6 +1071,8 @@ step_install_hyprflux() {
     if [[ $clone_status -ne 0 ]]; then
         die "Failed to clone HyprFlux repository. Check internet connection."
     fi
+
+    printf 'HYPRFLUX_REF=%s\n' "$HYPRFLUX_REF" > "${MOUNT_POINT}/etc/hyprflux-install-release"
 
     show_banner
     tui_spinner "Setting file permissions..." arch-chroot "$MOUNT_POINT" chown -R         "${INSTALL_USERNAME}:${INSTALL_USERNAME}"         "/home/${INSTALL_USERNAME}" || true
@@ -1090,6 +1120,43 @@ step_install_hyprflux() {
         die "HyprFlux installation failed. See ${wrapper_log}"
     fi
 
+    # Rebuild only after the wrapper has finished so this image is authoritative
+    # regardless of intermediate package/module rebuilds.
+    show_banner
+    set_status "Enforcing bootable initramfs..."
+    arch-chroot "$MOUNT_POINT" bash -c "
+        grep -q '^MODULES=(.*virtio_blk' /etc/mkinitcpio.conf || \
+          sed -i 's/^MODULES=.*/MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci)/' /etc/mkinitcpio.conf
+        mkinitcpio -P
+    " 2>&1 | tail -2
+
+    _initrd_listing=$(lsinitcpio "${MOUNT_POINT}/boot/initramfs-linux.img" 2>/dev/null) \
+        || die "Could not inspect the rebuilt initramfs."
+    if grep -Eq 'virtio_blk|nvme|ahci' <<< "$_initrd_listing"; then
+        log_ok "Initramfs rebuilt with disk modules present."
+    else
+        die "Initramfs rebuild verification failed: disk modules are missing."
+    fi
+
+    # Verify the exact binary used by initrd-cleanup.service. A shell script
+    # here recreates the observed emergency-mode loop; do not permit reboot.
+    _initrd_verify_dir=$(mktemp -d /tmp/hyprflux-initrd.XXXXXX)
+    if ! (cd "$_initrd_verify_dir" && \
+        lsinitcpio -x "${MOUNT_POINT}/boot/initramfs-linux.img" >/dev/null 2>&1); then
+        rm -rf "$_initrd_verify_dir"
+        die "Could not extract initramfs for systemctl verification."
+    fi
+    _initrd_systemctl=$(find "$_initrd_verify_dir" -path '*/usr/bin/systemctl' -print -quit)
+    if [[ -z "$_initrd_systemctl" ]] || \
+        ! file -L "$_initrd_systemctl" 2>/dev/null | grep -q 'ELF'; then
+        rm -rf "$_initrd_verify_dir"
+        die "Initramfs contains a missing or non-ELF systemctl; refusing to reboot."
+    fi
+    rm -rf "$_initrd_verify_dir"
+    unset _initrd_verify_dir _initrd_systemctl
+    log_ok "Initramfs systemctl verified as the real ELF binary."
+    tui_wait "" 1
+
     # Bootability verification BEFORE the user reboots — the #1 cause of the
     # post-install emergency mode is a root device the kernel can't find.
     # Check all three links in the chain: grub.cfg root= UUID, the real
@@ -1099,7 +1166,8 @@ step_install_hyprflux() {
     _boot_ok=true
 
     _root_uuid=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null)
-    _grub_root=$(grep -oE 'root=UUID=[a-fA-F0-9-]+' "${MOUNT_POINT}/boot/grub/grub.cfg" 2>/dev/null | head -1 | cut -d= -f3)
+    _grub_root=$(grep -m1 -oE 'root=UUID=[a-fA-F0-9-]+' \
+        "${MOUNT_POINT}/boot/grub/grub.cfg" 2>/dev/null | cut -d= -f3 || true)
 
     if [[ -n "$_grub_root" ]] && [[ "$_grub_root" == "$_root_uuid" ]]; then
         log_ok "GRUB root=UUID matches the root partition ($_root_uuid)."
@@ -1109,8 +1177,7 @@ step_install_hyprflux() {
         log_warn "Fix in chroot: grub-mkconfig -o /boot/grub/grub.cfg"
     fi
 
-    if lsinitcpio "${MOUNT_POINT}/boot/initramfs-linux.img" 2>/dev/null \
-        | grep -qE 'virtio_blk|nvme|ahci|sd_mod'; then
+    if grep -Eq 'virtio_blk|nvme|ahci|sd_mod' <<< "$_initrd_listing"; then
         log_ok "Initramfs contains disk modules."
     else
         _boot_ok=false
@@ -1121,10 +1188,9 @@ step_install_hyprflux() {
     if [[ "$_boot_ok" == true ]]; then
         log_ok "Bootability verified — safe to reboot."
     else
-        tui_error "Bootability issues found — the system may drop to emergency mode."
-        tui_print "The debug shell is available: exit it to continue to reboot anyway."
+        die "Bootability verification failed; refusing to reboot an unverified installation."
     fi
-    unset _boot_ok _root_uuid _grub_root
+    unset _boot_ok _root_uuid _grub_root _initrd_listing
 
     # Leave a boot-debug cheat-sheet in the installed system: if the first
     # boot still lands in emergency mode, these commands (run from the live
@@ -1176,14 +1242,29 @@ step_cleanup_reboot() {
     printf '%s' "${ANSI_HIDE_CURSOR}"
 
     show_banner
-    tui_spinner "Unmounting partitions..." umount -R "$MOUNT_POINT" || true
-    swapoff -a 2>/dev/null || true
+    sync
+    if findmnt -R "$MOUNT_POINT" &>/dev/null; then
+        tui_spinner "Unmounting partitions..." umount -R "$MOUNT_POINT" \
+            || die "Could not unmount the installed system; refusing a forced reboot."
+    fi
+    if findmnt -R "$MOUNT_POINT" &>/dev/null; then
+        die "Installed-system mounts remain active; refusing a forced reboot."
+    fi
+    swapoff -a 2>/dev/null || die "Could not disable swap; refusing a forced reboot."
+    if [[ -n "$(swapon --show=NAME --noheadings 2>/dev/null)" ]]; then
+        die "Swap remains active; refusing a forced reboot."
+    fi
+    sync
 
     show_banner
     set_status "Rebooting..."
     log_info "Remove installation media now!"
     tui_wait "Rebooting in 5 seconds..." 5
-    reboot
+
+    # The live ISO's generated shutdown ramfs can fail in initrd-cleanup and
+    # loop in emergency mode after installation. Mount and swap cleanup above
+    # is mandatory, so it is now safe to bypass userspace shutdown.
+    systemctl reboot --force --force || reboot -f
 }
 
 # ============================================================================

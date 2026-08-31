@@ -8,6 +8,7 @@
 #   ./test-qemu.sh                 # UEFI boot (default)
 #   ./test-qemu.sh --bios          # Legacy BIOS boot
 #   ./test-qemu.sh --headless      # No window; installer over serial console
+#   ./test-qemu.sh --boot-disk     # Boot existing installed test disk
 #   ./test-qemu.sh --software      # GTK window, software rendering (no GL)
 #   ./test-qemu.sh --gl            # GTK window, OpenGL acceleration
 #   ./test-qemu.sh path/to.iso     # Specific ISO file
@@ -34,8 +35,14 @@ CPUS="4"
 DISPLAY_MODE="auto"          # auto | gl | software | headless
 SERIAL_MODE=false           # --serial: guest console on the terminal (paste-friendly)
 # Default test disk lives next to the script (user-writable). Override with --disk=.
-DISK_IMAGE="${SCRIPT_DIR}/hyprflux-test-disk.qcow2"
+DEFAULT_DISK_IMAGE="${SCRIPT_DIR}/hyprflux-test-disk.qcow2"
+DISK_IMAGE="${DEFAULT_DISK_IMAGE}"
 USE_VNC=false
+BOOT_DISK_ONLY=false
+ALLOW_STALE_ISO=false
+FRESH_VARS=false
+OVERWRITE_DISK=false
+DISK_EXPLICIT=false
 
 # OVMF firmware paths (Arch Linux)
 OVMF_CODE="/usr/share/edk2/x64/OVMF_CODE.4m.fd"
@@ -69,8 +76,21 @@ for arg in "$@"; do
     # installer there too).
     SERIAL_MODE=true
     ;;
+  --boot-disk)
+    BOOT_DISK_ONLY=true
+    ;;
+  --fresh-vars)
+    FRESH_VARS=true
+    ;;
+  --allow-stale-iso)
+    ALLOW_STALE_ISO=true
+    ;;
+  --overwrite-disk)
+    OVERWRITE_DISK=true
+    ;;
   --disk=*)
     DISK_IMAGE="${arg#--disk=}"
+    DISK_EXPLICIT=true
     ;;
   --ram=*)
     RAM="${arg#--ram=}"
@@ -92,6 +112,11 @@ for arg in "$@"; do
     echo "  --vnc         Also expose VNC on :0 (works with --headless)"
     echo "  --serial      Guest console on the terminal - host copy/paste works"
     echo "                natively (installer auto-launches on ttyS0)"
+    echo "  --boot-disk   Boot the existing test disk without attaching an ISO"
+    echo "                or recreating the disk"
+    echo "  --fresh-vars  Reset OVMF state (tests the fallback EFI loader)"
+    echo "  --allow-stale-iso  Permit an ISO older than profile source files"
+    echo "  --overwrite-disk   Permit deleting an existing custom --disk path"
     echo "  --disk=PATH   Test disk path (default: ./hyprflux-test-disk.qcow2)"
     echo "  --ram=SIZE    RAM size (default: 8G)"
     echo "  --cpus=N      Number of CPUs (default: 4)"
@@ -108,8 +133,8 @@ for arg in "$@"; do
   esac
 done
 
-# Find ISO if not specified
-if [[ -z "${ISO_FILE}" ]]; then
+# Find ISO if not specified (installation mode only)
+if [[ "${BOOT_DISK_ONLY}" != true ]] && [[ -z "${ISO_FILE}" ]]; then
   ISO_FILE=$(ls -t "${OUT_DIR}"/*.iso 2>/dev/null | head -1)
   if [[ -z "${ISO_FILE}" ]]; then
     echo "Error: No ISO found in ${OUT_DIR}/"
@@ -118,9 +143,28 @@ if [[ -z "${ISO_FILE}" ]]; then
   fi
 fi
 
-if [[ ! -f "${ISO_FILE}" ]]; then
+if [[ "${BOOT_DISK_ONLY}" != true ]] && [[ ! -f "${ISO_FILE}" ]]; then
   echo "Error: ISO file not found: ${ISO_FILE}"
   exit 1
+fi
+
+# Refuse to test an ISO that predates any file copied into the image. This
+# prevents repeated tests of old installer code after a source edit.
+if [[ "${BOOT_DISK_ONLY}" != true ]] && [[ "${ALLOW_STALE_ISO}" != true ]]; then
+  newer_source=""
+  for input in profiledef.sh packages.x86_64 pacman.conf airootfs efiboot grub syslinux; do
+    [[ ! -e "${SCRIPT_DIR}/${input}" ]] && continue
+    newer_source=$(find "${SCRIPT_DIR}/${input}" \( -type f -o -type l \) \
+      -newer "${ISO_FILE}" -print -quit 2>/dev/null || true)
+    [[ -n "${newer_source}" ]] && break
+  done
+  if [[ -n "${newer_source}" ]]; then
+    echo "Error: ISO is stale; source is newer: ${newer_source}"
+    echo "Rebuild with: sudo bash build.sh"
+    echo "Override only for deliberate old-image testing: --allow-stale-iso"
+    exit 1
+  fi
+  unset newer_source input
 fi
 
 # KVM availability: require it, but degrade gracefully when absent
@@ -133,7 +177,11 @@ else
   KVM_OPT="-cpu max"
 fi
 
-echo "Testing ISO: ${ISO_FILE}"
+if [[ "${BOOT_DISK_ONLY}" == true ]]; then
+  echo "Booting disk: ${DISK_IMAGE}"
+else
+  echo "Testing ISO: ${ISO_FILE}"
+fi
 echo "Boot mode:   ${BOOT_MODE^^}"
 echo "RAM:         ${RAM}"
 echo "CPUs:        ${CPUS}"
@@ -196,9 +244,14 @@ build_qemu_cmd() {
     qemu-system-x86_64
     -m "${RAM}"
     -smp "${CPUS}"
-    -cdrom "${ISO_FILE}"
-    -boot d
   )
+  if [[ "${BOOT_DISK_ONLY}" == true ]]; then
+    QEMU_CMD+=(-boot order=c,menu=on)
+  else
+    # Boot installation media once. After the installer reboots, firmware
+    # proceeds to the installed disk instead of entering the live ISO again.
+    QEMU_CMD+=(-cdrom "${ISO_FILE}" -boot once=d,menu=on)
+  fi
   # KVM options expand to two args when available
   if [[ -n "${KVM_OPT}" ]]; then
     # shellcheck disable=SC2206
@@ -261,8 +314,18 @@ build_qemu_cmd() {
       echo "Install it: sudo pacman -S edk2-ovmf"
       exit 1
     fi
-    OVMF_VARS_COPY="/tmp/hyprflux-ovmf-vars.fd"
-    cp "${OVMF_VARS}" "${OVMF_VARS_COPY}"
+    OVMF_VARS_COPY="${DISK_IMAGE}.ovmf-vars.fd"
+    if [[ "${FRESH_VARS}" == true ]]; then
+      rm -f "${OVMF_VARS_COPY}"
+    fi
+    if [[ ! -f "${OVMF_VARS_COPY}" ]]; then
+      cp "${OVMF_VARS}" "${OVMF_VARS_COPY}"
+    fi
+    if [[ "$(stat -c %s "${OVMF_VARS_COPY}")" != "$(stat -c %s "${OVMF_VARS}")" ]]; then
+      echo "Error: OVMF vars file does not match the installed firmware template."
+      echo "Retry with --fresh-vars: ${OVMF_VARS_COPY}"
+      exit 1
+    fi
     QEMU_CMD+=(
       -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}"
       -drive if=pflash,format=raw,file="${OVMF_VARS_COPY}"
@@ -283,10 +346,20 @@ build_qemu_cmd() {
 create_test_disk() {
   local path="$1"
   rm -f "${path}" 2>/dev/null || true
+  rm -f "${path}.ovmf-vars.fd" 2>/dev/null || true
   qemu-img create -f qcow2 "${path}" 40G >/dev/null 2>&1
 }
 
-if ! create_test_disk "${DISK_IMAGE}"; then
+if [[ "${BOOT_DISK_ONLY}" == true ]]; then
+  if [[ ! -f "${DISK_IMAGE}" ]]; then
+    echo "Error: Installed test disk not found: ${DISK_IMAGE}"
+    exit 1
+  fi
+elif [[ "${DISK_EXPLICIT}" == true && -e "${DISK_IMAGE}" && "${OVERWRITE_DISK}" != true ]]; then
+  echo "Error: Refusing to delete existing custom disk: ${DISK_IMAGE}"
+  echo "Pass --overwrite-disk only when a destructive fresh install is intended."
+  exit 1
+elif ! create_test_disk "${DISK_IMAGE}"; then
   uid=$(id -u)
   DISK_IMAGE="${TMPDIR:-/tmp}/hyprflux-test-disk-${uid}.qcow2"
   if ! create_test_disk "${DISK_IMAGE}"; then
@@ -298,6 +371,18 @@ if ! create_test_disk "${DISK_IMAGE}"; then
     done
   fi
   echo "Configured disk path not usable — using ${DISK_IMAGE}"
+fi
+
+if ! qemu-img info "${DISK_IMAGE}" >/dev/null 2>&1; then
+  echo "Error: QEMU disk is missing or invalid: ${DISK_IMAGE}"
+  exit 1
+fi
+
+# Prevent concurrent QEMU processes from writing the same disk/firmware state.
+exec 9>"${DISK_IMAGE}.lock"
+if ! flock -n 9; then
+  echo "Error: Test disk is already in use: ${DISK_IMAGE}"
+  exit 1
 fi
 
 try_modes=("${DISPLAY_MODE}")
