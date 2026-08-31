@@ -273,11 +273,11 @@ build_qemu_cmd() {
     fi
     ;;
   software)
-    QEMU_CMD+=(-display gtk,show-menubar=off,show-tabs=off)
+    QEMU_CMD+=(-display gtk,grab-on-hover=on,show-menubar=off,show-tabs=off)
     QEMU_CMD+=(-device virtio-vga)
     ;;
   gl)
-    QEMU_CMD+=(-display gtk,gl=on,show-menubar=off,show-tabs=off)
+    QEMU_CMD+=(-display gtk,gl=on,grab-on-hover=on,show-menubar=off,show-tabs=off)
     QEMU_CMD+=(-device virtio-vga-gl)
     ;;
   esac
@@ -373,10 +373,17 @@ elif ! create_test_disk "${DISK_IMAGE}"; then
   echo "Configured disk path not usable — using ${DISK_IMAGE}"
 fi
 
-if ! qemu-img info "${DISK_IMAGE}" >/dev/null 2>&1; then
-  echo "Error: QEMU disk is missing or invalid: ${DISK_IMAGE}"
+disk_info_error=""
+if ! disk_info_error=$(qemu-img info "${DISK_IMAGE}" 2>&1 >/dev/null); then
+  if [[ "${disk_info_error}" == *"write lock"* ]] || [[ "${disk_info_error}" == *"another process"* ]]; then
+    echo "Error: QEMU disk is already open. Close the existing VM window first:"
+  else
+    echo "Error: QEMU disk is missing or invalid:"
+  fi
+  echo "       ${DISK_IMAGE}"
   exit 1
 fi
+unset disk_info_error
 
 # Prevent concurrent QEMU processes from writing the same disk/firmware state.
 exec 9>"${DISK_IMAGE}.lock"
@@ -405,12 +412,18 @@ for mode in "${try_modes[@]}"; do
     build_qemu_cmd "${mode}"
     echo ""
     echo "Launching QEMU (${mode})..."
+    if [[ "${mode}" != "headless" ]]; then
+      echo "Keyboard: hover or click inside the VM; press Ctrl+Alt+G to release input."
+    fi
     exec "${QEMU_CMD[@]}"
   fi
 
   build_qemu_cmd "${mode}"
   echo ""
   echo "Launching QEMU (${mode})..."
+  if [[ "${mode}" != "headless" ]]; then
+    echo "Keyboard: hover or click inside the VM; press Ctrl+Alt+G to release input."
+  fi
   set +e
   "${QEMU_CMD[@]}" &
   qemu_pid=$!
