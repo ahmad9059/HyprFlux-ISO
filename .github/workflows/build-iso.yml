@@ -58,7 +58,7 @@ jobs:
           echo "file=${ISO_FILE}" >> "$GITHUB_OUTPUT"
           echo "name=${ISO_NAME}" >> "$GITHUB_OUTPUT"
           echo "size=${ISO_SIZE}" >> "$GITHUB_OUTPUT"
-          sha256sum "$ISO_FILE" > "${ISO_FILE}.sha256"
+          (cd out && sha256sum "$ISO_NAME" > "${ISO_NAME}.sha256")
           echo "SHA256: $(cat "${ISO_FILE}.sha256")"
 
       - name: Upload ISO artifact

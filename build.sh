@@ -86,7 +86,7 @@ if [[ -n "$ISO_FILE" ]]; then
     echo "  Size: ${ISO_SIZE}"
 
     # Generate SHA256
-    sha256sum "$ISO_FILE" > "${ISO_FILE}.sha256"
+    (cd "$OUT_DIR" && sha256sum "$(basename "$ISO_FILE")" > "$(basename "$ISO_FILE").sha256")
     echo "  SHA256: $(cut -d' ' -f1 "${ISO_FILE}.sha256")"
     echo "============================================"
     echo ""
