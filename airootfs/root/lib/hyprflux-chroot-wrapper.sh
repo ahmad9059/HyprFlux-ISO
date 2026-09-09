@@ -238,10 +238,8 @@ if [[ -f "${INSTALL_SCRIPTS}/Global_functions.sh" ]]; then
 fi
 run_as_user "${INSTALL_SCRIPTS}/01-hypr-pkgs.sh"
 
-# A4b: Post-check AUR packages — if any failed inside the chroot (AUR access
-# is the most fragile step: RPC query, PKGBUILD clone, source builds), show
-# the actual yay error from the install log so it is visible in the TUI, and
-# note that the first-boot fixup (Phase D) will retry them on the desktop.
+# A4b: Post-check and retry AUR packages. This also repairs installs from a
+# pinned HyprFlux revision where one failed package could stop the AUR loop.
 AUR_PACKAGES=(mpvpaper waybar-git visual-studio-code-bin 64gram-desktop-bin vesktop \
               foliate localsend-bin tuxedo-bin claude-code opencode-bin openai-codex-bin \
               freedownloadmanager)
@@ -253,12 +251,32 @@ for _aur_pkg in "${AUR_PACKAGES[@]}"; do
 done
 if [ ${#AUR_MISSING[@]} -gt 0 ]; then
   echo "    [WARN] AUR packages missing after Phase A: ${AUR_MISSING[*]}"
-  echo "           They will be retried at first boot (desktop session)."
-  echo "           Last lines of the install log for diagnosis:"
-  _pkg_log="${TARGET_HOME}/HyprFlux/logs/installer/"*_hypr-pkgs.log
-  tail -25 ${_pkg_log} 2>/dev/null | sed 's/^/           /'
+  echo "           Retrying each package, with a forced AUR fallback..."
+  AUR_STILL_MISSING=()
+  for _aur_pkg in "${AUR_MISSING[@]}"; do
+    echo "    [RETRY] ${_aur_pkg}"
+    if ! su - "${TARGET_USER}" -s /bin/bash -c \
+      "timeout 3600 yay -S --needed --noconfirm '${_aur_pkg}'"; then
+      echo "            Repository attempt failed; trying the AUR PKGBUILD..."
+      su - "${TARGET_USER}" -s /bin/bash -c \
+        "timeout 3600 yay -S --aur --needed --noconfirm '${_aur_pkg}'" || true
+    fi
+    su - "${TARGET_USER}" -s /bin/bash -c \
+      "yay -Q '${_aur_pkg}' >/dev/null 2>&1" 2>/dev/null || AUR_STILL_MISSING+=("$_aur_pkg")
+  done
+
+  AUR_MISSING=("${AUR_STILL_MISSING[@]}")
+  if [ ${#AUR_MISSING[@]} -gt 0 ]; then
+    echo "    [WARN] AUR packages still missing: ${AUR_MISSING[*]}"
+    echo "           They will be retried at first boot (desktop session)."
+    echo "           Last lines of the install log for diagnosis:"
+    _pkg_log="${TARGET_HOME}/HyprFlux/logs/installer/"*_hypr-pkgs.log
+    tail -25 ${_pkg_log} 2>/dev/null | sed 's/^/           /'
+  else
+    echo "    [OK] All missing AUR packages installed during retry."
+  fi
 fi
-unset _aur_pkg AUR_PACKAGES AUR_MISSING _pkg_log
+unset _aur_pkg AUR_PACKAGES AUR_MISSING AUR_STILL_MISSING _pkg_log
 
 # A5: PipeWire audio
 echo "[A5] Installing PipeWire audio stack..."
@@ -506,35 +524,43 @@ systemctl --user enable --now pipewire.socket 2>/dev/null || true
 systemctl --user enable --now pipewire-pulse.socket 2>/dev/null || true
 systemctl --user enable --now wireplumber.service 2>/dev/null || true
 
-# Install AUR packages (primary path — the desktop session has full
-# network, a real user session and passwordless pacman via the
-# hyprflux-pacman sudoers rule). Any that failed inside the chroot are
-# completed here; ones already present are skipped.
+# Install AUR packages that remain missing. Keep the autostart entry until all
+# required packages are present so a temporary network failure can recover on
+# a later login.
+AUR_LOG="$HOME/HyprFlux/logs/first-boot-aur.log"
+mkdir -p "$(dirname "$AUR_LOG")"
+aur_pending=0
 if command -v yay &>/dev/null; then
-    AUR_PACKAGES=(mpvpaper waybar-git visual-studio-code-bin 64gram-desktop-bin vesktop                   foliate localsend-bin tuxedo-bin claude-code opencode-bin openai-codex-bin                   freedownloadmanager)
+    AUR_PACKAGES=(mpvpaper waybar-git visual-studio-code-bin 64gram-desktop-bin vesktop
+                  foliate localsend-bin tuxedo-bin claude-code opencode-bin openai-codex-bin
+                  freedownloadmanager)
     for _aur_pkg in "${AUR_PACKAGES[@]}"; do
         if ! yay -Q "$_aur_pkg" &>/dev/null; then
             notify-send "HyprFlux" "Installing $_aur_pkg..." 2>/dev/null || true
-            yay -S --noconfirm "$_aur_pkg" &>/dev/null
+            if ! timeout 3600 yay -S --needed --noconfirm "$_aur_pkg" >> "$AUR_LOG" 2>&1; then
+                timeout 3600 yay -S --aur --needed --noconfirm "$_aur_pkg" >> "$AUR_LOG" 2>&1 || true
+            fi
             if yay -Q "$_aur_pkg" &>/dev/null; then
                 notify-send "HyprFlux" "$_aur_pkg installed." 2>/dev/null || true
             else
-                notify-send "HyprFlux" "$_aur_pkg STILL failed — run: yay -S $_aur_pkg" 2>/dev/null || true
+                aur_pending=1
+                notify-send "HyprFlux" "$_aur_pkg still failed; it will retry next login." 2>/dev/null || true
             fi
         fi
     done
     unset _aur_pkg AUR_PACKAGES
+else
+    aur_pending=1
 fi
 
-# Mark as done
-mkdir -p "$(dirname "$MARKER")"
-touch "$MARKER"
-
-# Remove autostart entry (one-shot)
-rm -f "$HOME/.config/autostart/hyprflux-first-boot.desktop"
-
-# Notify user
-notify-send "HyprFlux" "First-boot setup complete!" 2>/dev/null || true
+if [ "$aur_pending" -eq 0 ]; then
+    mkdir -p "$(dirname "$MARKER")"
+    touch "$MARKER"
+    rm -f "$HOME/.config/autostart/hyprflux-first-boot.desktop"
+    notify-send "HyprFlux" "First-boot setup complete!" 2>/dev/null || true
+else
+    notify-send "HyprFlux" "Some packages remain missing; see $AUR_LOG" 2>/dev/null || true
+fi
 FIRSTBOOT_EOF
 
 chmod +x "${TARGET_HOME}/.local/bin/hyprflux-first-boot.sh"

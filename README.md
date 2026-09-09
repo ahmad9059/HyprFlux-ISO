@@ -38,11 +38,13 @@ The flow is:
 5. Partition and mount the target disk
 6. Install the base Arch system with `pacstrap`
 7. Configure timezone, locale, users, networking, and GRUB in the target system
-8. Clone the HyprFlux repository (base-installer and base-dots are merged subdirs) into the target user's home directory
-9. Reboot into the installed system
-10. Continue the HyprFlux desktop integration flow from the installed system's first boot path
+8. Clone a pinned HyprFlux release revision into the target user's home directory
+9. Run the complete package, dotfile, theme, and service pipeline inside chroot
+10. Verify GRUB, initramfs, services, and fallback boot artifacts
+11. Reboot into the installed HyprFlux desktop
 
-This keeps the live ISO simpler and avoids coupling the full HyprFlux install pipeline directly into the ISO build process.
+Only desktop-session operations and failed AUR package recovery are deferred to
+the first-boot fixup.
 
 ## Key Features
 
@@ -95,7 +97,7 @@ The installer pipeline is structured as follows:
 - `Step 7` Disk partitioning
 - `Step 8` Base system installation with `pacstrap`
 - `Step 9` Target system configuration with `arch-chroot`
-- `Step 10` HyprFlux integration preparation
+- `Step 10` Complete HyprFlux integration and boot verification
 - `Step 11` Cleanup and reboot
 
 ## Boot Configuration
