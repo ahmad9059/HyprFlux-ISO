@@ -4,7 +4,7 @@ This is a progress checkpoint, **not production certification**.
 
 ## Verified
 
-- `python3 -m unittest discover -s tests -v`: **40 tests passed**.
+- `python3 -m unittest discover -s tests -v`: **45 tests passed**.
 - ShellCheck warning-level checks of installer, libraries, launchers and guest
   scripts passed; Python compilation and `git diff --check` passed.
 - `out/hyprflux-2026.10.30-x86_64.iso` was built (1.3 GB), and its SHA256 sidecar
@@ -19,9 +19,226 @@ This is a progress checkpoint, **not production certification**.
   cleanly. `/dev/dri/renderD129` crashed QEMU on shutdown; the runner now probes
   devices rather than assuming a vendor-specific preference.
 
-## Corrected-image Desktop profile: all four VM install/boot paths passed
+## Latest candidate: exact-image VM install/boot matrix complete
+
+`/tmp/opencode/latest-acceptance-report.json` reports
+`vm_install_boot_matrix_complete: true`, `missing_vm_cases: []` for digest
+`51cdbcc23d547295471b3ae7278fe0e1a705b9bfd0dd66dca3618e7375ba1f71`.
+Every row used the embedded installer, not a hot-loaded repair:
+
+| Profile / firmware | Storage / layout | Install + first desktop boot | Evidence state |
+| --- | --- | --- | --- |
+| Full / UEFI | NVMe automatic | PASS | `.qemu-tests/uefi-zvvcizrz/` |
+| Desktop / BIOS | SATA automatic + 4 GiB swap | PASS | `.qemu-tests/bios-42o1wga8/` |
+| Desktop / UEFI | VirtIO automatic | PASS | `.qemu-tests/uefi-74xui7ty/` |
+| Desktop / UEFI | NVMe manual GPT, 512 MiB ESP | PASS | `.qemu-tests/uefi-9zhtya4j/` |
+| Desktop / BIOS | SCSI manual GPT, 2 MiB BIOS boot | PASS | `.qemu-tests/bios-onew47d0/` |
+
+All five screenshots were inspected: rendered Waybar and first-login
+completion, without apparent config warnings. Both firmware-loader smoke tests
+also passed. Required cleanup, actual Waybar layers and audio user services were
+checked by the guest verifier. All retained disks were compacted only after
+qemu-img checks and guest-content equality comparison; they remain bootable.
+
+Workflow `sh_196cd9eeb0012RlIElO6zpRVoV` finished successfully, including
+`acceptance-report.py --require-vm-matrix`. Log:
+`/tmp/opencode/latest-matrix-workflow.log`. Free space after completion: 16 GiB.
+These VM results do not constitute physical-hardware certification.
+
+### Interactive TUI: nondestructive flow passed
+
+Started an isolated live-ISO TUI inspection with an untouched embedded installer,
+normal tty1 root autologin, no guest-driver prompt overrides, and a new disposable
+40 GiB disk. Only `console=tty1`, disabled live Plymouth and masked serial getty
+select the console; no production installer source was replaced. Task
+`sh_196ffcf810014w6a3ZMGG1t3YA` completed; launcher log:
+`/tmp/opencode/interactive-tui.log`.
+
+Evidence state: `.qemu-tests/tui-dnufrweq/`. Exercised welcome cancellation and
+restart, timezone/locale search, keyboard selection, invalid hostname/username
+rejection, password mismatch/retry, Full profile selection and settings review.
+The disk menu offered only the disposable `/dev/vda` (40 GiB). Entering `no` at
+the literal `yes` wipe prompt returned to partition-mode selection; Escape
+cancelled installation cleanly. QEMU was then stopped via QMP. With its runner
+lock acquired, `qemu-img compare` against a separate new blank 40 GiB qcow2
+reported **Images are identical**: no guest disk contents changed.
+
+Screenshots `tui-01-welcome.png` through `tui-14-cancelled.png` (username error
+captured as `tui-07-invalid-username.txt`), `tui-result.json`, and
+`blank-disk-comparison.txt` retain the evidence. Some headless VGA captures
+partially refreshed the banner; logical `/dev/vcsu1` capture confirmed it was
+present. This was nondestructive TUI coverage, not an end-to-end interactive
+installation; destructive installs are covered by the automated matrix above.
+
+### Remaining release gate: physical hardware
+
+Actual physical Intel/AMD/NVIDIA, Wi-Fi/audio playback, suspend/resume and
+external-display acceptance will still require spare hardware.
+
+### Latest-image build and test details
+
+New image built and checksum verified:
+`out/full-audit-fix-20261101T093630Z/hyprflux-2026.11.01-x86_64.iso`.
+SHA256: `51cdbcc23d547295471b3ae7278fe0e1a705b9bfd0dd66dca3618e7375ba1f71`.
+Build evidence: `/tmp/opencode/full-audit-fix-iso-build.log` ends in `Done!` and
+`hyprflux-2026.11.01-x86_64.iso: OK`.
+
+Before building, the latest current-source Full integration and desktop boot
+both passed: `/tmp/opencode/full-profile-offline-audit-resume.log` contains
+`HYPRFLUX_TEST_INSTALL_PASS`, and
+`/tmp/opencode/full-profile-offline-audit-boot.log` contains
+`HYPRFLUX_TEST_BOOT_PASS`. No failed-component summary or missing AUR apps were
+reported; Papirus is installed. These were repaired/hot-loaded results, not a
+clean acceptance result for this new image.
+
+The user approved deleting only the four superseded Desktop `disk.qcow2` files
+in `uefi-_nvgsobl`, `bios-j1uvj6i3`, `uefi-bur1qq9g`, `bios-azk4x5d5`. Acquired
+their locks, saved current image metadata/removal notes, and removed those
+exact files. All logs, screenshots, source snapshots and previous compaction
+proof remain; those four old VMs are no longer bootable. No ISOs were removed.
+Space returned to about 26 GiB.
+
+The user-approved Full VM compaction completed: 23.15 -> 12.68 GiB allocated,
+same guest contents verified (`/tmp/opencode/full-vm-compaction.log`). Free
+space reached 36.03 GiB before the clean test.
+
+Clean **embedded UEFI/NVMe Full-profile** installation of the new image
+**passed**: `HYPRFLUX_TEST_INSTALL_PASS` in
+`/tmp/opencode/final-full-embedded-install.log`. Its **first desktop boot also
+passed**: `HYPRFLUX_TEST_BOOT_PASS` in `/tmp/opencode/final-full-first-boot.log`.
+State `.qemu-tests/uefi-zvvcizrz/`. Screenshot inspected: rendered Waybar,
+first-login completion, and no config warning.
+
+The Full bulk transactions failed twice, then per-package fallback recovered.
+A read-only post-install audit queried all 27 packages flagged by the batch
+failure, all 12 tracked Full apps, and Papirus: every query succeeded. Evidence:
+`.qemu-tests/uefi-zvvcizrz/full-package-audit.txt`. `swww` resolves to the
+installed `awww` replacement. No missing AUR apps or failed-component summary
+remain, and Papirus checks 103433 files with zero missing. These transient batch
+errors are not being mistaken for unrecovered package failures.
+
+Completed acceptance runs on this newest digest:
+- Clean embedded Desktop BIOS/SATA + 4 GiB swap install **passed**:
+  `sh_196b0df28001QsKB4lkfo2cyaG`, `/tmp/opencode/final-desktop-bios-install.log`.
+- Actual UEFI/GRUB firmware smoke **passed**: `HYPRFLUX_TEST_SMOKE_PASS` in
+  `/tmp/opencode/final-audited-uefi-smoke.log`, state
+  `.qemu-tests/uefi-uq8rvbbv/`.
+- Actual BIOS/Syslinux firmware smoke **passed**: `HYPRFLUX_TEST_SMOKE_PASS` in
+  `/tmp/opencode/final-audited-bios-smoke.log`, state
+  `.qemu-tests/bios-_4k2w7xk/`.
+
+The latest Desktop BIOS/SATA + swap installation and **first desktop boot both
+passed**: `HYPRFLUX_TEST_INSTALL_PASS` in
+`/tmp/opencode/final-desktop-bios-install.log`, and `HYPRFLUX_TEST_BOOT_PASS` in
+`/tmp/opencode/final-desktop-bios-first-boot.log`. State
+`.qemu-tests/bios-42o1wga8/`; screenshot inspected with rendered Waybar and
+first-login completion.
+
+Added `tests/acceptance-report.py`. It computes the exact ISO digest, excludes
+repaired/other-image states and requires install completion plus boot marker and
+PNG evidence. Current report `/tmp/opencode/latest-acceptance-report.json`
+confirms all five required latest-image cases pass, with no missing cases. It
+does not certify screenshot contents, firmware smoke or physical hardware.
+All 45 tests and Python compilation pass; no production ISO inputs changed.
+
+The user approved deleting only the superseded
+`.qemu-tests/uefi-50k95lyz/disk.qcow2` and verified lossless compaction of retained
+and new completed acceptance disks as needed. Acquired that older disk's lock,
+saved metadata/removal note, and removed that exact file. Its logs and audits
+remain; the latest Full VM is retained. Free space returned to 17 GiB.
+
+Workflow `sh_196cd9eeb0012RlIElO6zpRVoV` completed
+`/tmp/opencode/finish-latest-matrix.py` sequentially: compact retained Full and
+Desktop BIOS disks with compare proof, then clean embedded Desktop UEFI/VirtIO
+automatic, UEFI/NVMe manual-GPT, and BIOS/SCSI manual-GPT installs. Each is booted
+and compacted after passing; all latest VMs remain bootable. It requires 12 GiB
+free before each install and monitors a 2 GiB floor during conversions. No
+original is replaced before equality checks pass.
+
+Workflow log: `/tmp/opencode/latest-matrix-workflow.log`.
+Current operation: `/tmp/opencode/latest-matrix-progress.json`.
+Per-case logs: `/tmp/opencode/latest-matrix-{uefi-auto,uefi-manual,bios-manual}-{install,boot}.log`.
+Its final `acceptance-report.py --require-vm-matrix` passed. All three new
+screenshots were inspected.
+
+No installation or TUI VM remains running. Earlier four-path Desktop matrix
+results below belong to the older digest and are not being relabeled as
+latest-image acceptance. Physical-hardware acceptance remains outstanding.
+
+## Earlier Waybar candidate: four Desktop VM install/boot paths passed
 
 ### Active next gate: exact-image Full profile
+
+Latest focused offline-audit resume also **passed** installation and boot, with
+no failed-component summary and no recorded missing AUR apps. See the latest
+candidate section above for the rebuilt image and queued clean test.
+
+**Papirus fix passed focused integration and desktop boot:**
+`/tmp/opencode/full-profile-papirus-repair.log` reports
+`HYPRFLUX_TEST_INSTALL_PASS`, installs `papirus-icon-theme`, and checks 103433
+theme files with zero missing. The adapted module reports success, target
+profile remains Full, and no missing AUR apps are recorded.
+`/tmp/opencode/full-profile-papirus-boot.log` reports
+`HYPRFLUX_TEST_BOOT_PASS`. These are hot-loaded repair results, not new-image
+certification.
+
+The warning audit drove further explicit offline corrections:
+- Required audio packages are now queried in chroot and validated with `-Qk`;
+  user activation stays in first-login setup, rather than running upstream's
+  `systemctl --user` script in an offline chroot.
+- ISO final validation checks actual installed package names and commands,
+  replacing the legacy checker with obsolete package names. It now additionally
+  checks the original essential tools and `awww-daemon`.
+- Batch upstream scripts receive `TERM=xterm-256color`. Reproduced a silent
+  set-e/tput exit with `TERM=dumb`, while the supported terminal setup succeeds.
+- Optional Chaotic-AUR bootstrap is explicitly not run: ISO profiles use
+  official repositories plus the existing direct AUR helper installation. The
+  tested 12 Full apps installed through that route without Chaotic-AUR.
+
+All 44 tests and ShellCheck pass. A fresh current-source Full integration resume
+is running: `sh_19673634e001YkHMKEJgYO4RFu`,
+`/tmp/opencode/full-profile-offline-audit-resume.log`. The existing candidate ISO
+does not embed these fixes; it must be rebuilt and retested after validation.
+
+#### Original Full run and audit
+
+**Full-profile install and first desktop boot passed** on the exact candidate:
+`HYPRFLUX_TEST_INSTALL_PASS` in
+`/tmp/opencode/corrected-iso-full-profile-install.log`, and
+`HYPRFLUX_TEST_BOOT_PASS` in `/tmp/opencode/corrected-iso-full-first-boot.log`.
+State `.qemu-tests/uefi-50k95lyz/`; screenshot inspected. Target recorded
+`HYPRFLUX_INSTALLED_PROFILE=full` and no recorded missing AUR apps. A separate
+read-only package query confirmed all 12 tracked Full applications installed;
+saved evidence: `full-app-audit.txt` in the run directory.
+
+**Warning audit found a real defect:** module 04 requests `papirus-folders` from
+official repositories, where it is unavailable; the whole transaction fails,
+leaving `papirus-icon-theme` absent. The source fix now makes the icon theme
+mandatory and adapts a temporary copy of module 04 to install only the official
+icon package. The pinned upstream module is left untouched; temporary copy
+cleanup is trapped, and final package validation checks the installed theme.
+All 42 tests and ShellCheck pass. This fix is NOT in the existing ISO yet.
+
+Other warnings remain: `initial.sh`, `pipewire.sh`, and upstream
+`02-Final-Check.sh`. PipeWire and WirePlumber actually passed guest runtime
+checks. The upstream final check references obsolete names (`rofi-wayland`,
+`swww`, repository `waybar` rather than installed alternatives). Initial setup
+and these script exits still need classification; do not silently suppress them.
+
+A focused current-source Full resume is running to validate the icon fix:
+`sh_1966d2b90001okJ4IilskwvcU8`, `/tmp/opencode/full-profile-papirus-repair.log`.
+This uses hot-loaded updated integration, not embedded-image acceptance. The
+runner now archives original image/machine metadata and explicitly marks resumed
+states `embedded=false, resumed=true`, preventing an old exact-image label from
+being retained after source changes. Original Full results are in archived
+attempt logs; the current mutable disk must not be presented as unmodified ISO
+evidence. After validation, rebuild and retest the new candidate.
+
+All four approved compactions completed and compared identical; total free
+space reached 30.91 GiB before Full installation. Per-disk `compaction.json`
+and `/tmp/opencode/completed-vm-compaction.log` retain the verification results.
+
+#### Full-test setup history
 
 The user approved lossless compaction of the four completed VM disks, keeping
 them bootable. Conversion uses qcow2/zstd, rejects snapshots/backing chains/

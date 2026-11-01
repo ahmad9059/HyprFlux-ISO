@@ -182,6 +182,19 @@ disk, never in the production image. **Do not distribute test qcow2 images.**
 
 ## Release acceptance
 
+Generate the recorded install/boot matrix for one exact image:
+
+```bash
+python3 tests/acceptance-report.py path/to.iso --require-vm-matrix
+```
+
+The JSON report hashes the ISO, excludes other images and hot-loaded repairs,
+and requires an installation-completion record, a real boot-pass marker and a
+PNG screenshot. The optional flag exits nonzero if a required Desktop/Full
+VM case is missing. Firmware smoke, optional-app audits, screenshot inspection,
+interactive TUI use and physical hardware are separate gates; a complete VM
+report never certifies production readiness.
+
 Do not call an image production-ready until these pass on that exact image:
 
 - UEFI and BIOS ISO firmware boot

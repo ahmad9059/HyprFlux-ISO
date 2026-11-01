@@ -25,6 +25,93 @@ def bash(code):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_exact_image_report_excludes_repairs_and_other_images(self):
+        import importlib.util
+        import json
+        spec = importlib.util.spec_from_file_location('acceptance_report', ROOT / 'tests/acceptance-report.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory(prefix='hyprflux-test-') as temp:
+            base = Path(temp)
+            for name, digest, resumed in (('good', 'expected', False), ('repair', 'expected', True), ('other', 'different', False)):
+                state = base / name
+                state.mkdir()
+                (state / 'image.sha256').write_text(f'{digest}  image.iso\n')
+                (state / 'machine.json').write_text(json.dumps(dict(embedded=True, resumed=resumed, profile='desktop', bios=False, disk_bus='virtio')))
+                (state / 'installed.ok').touch()
+                (state / 'desktop.png').write_bytes(b'\x89PNG\r\n\x1a\nfixture')
+                (state / 'serial.log').write_text('\nHYPRFLUX_TEST_BOOT_PASS\n')
+            rows = module.recorded_results(base, 'expected')
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(sum(row['boot_pass'] for row in rows), 1)
+            self.assertEqual(len(module.missing_cases(rows)), 4)
+            good = base / 'good'
+            (good / 'serial.log').write_text('echo HYPRFLUX_TEST_BOOT_PASS\n')
+            self.assertFalse(any(row['boot_pass'] for row in module.recorded_results(base, 'expected')))
+            (good / 'serial.log').write_text('\nHYPRFLUX_TEST_BOOT_PASS\n')
+            (good / 'desktop.png').unlink()
+            self.assertFalse(any(row['boot_pass'] for row in module.recorded_results(base, 'expected')))
+
+    def test_batch_upstream_scripts_get_working_terminal_environment(self):
+        wrapper = (ROOT / "airootfs/root/lib/hyprflux-chroot-wrapper.sh").read_text()
+        run = "run_as_user() {" + wrapper.split("run_as_user() {", 1)[1].split("\n}", 1)[0] + "\n}"
+        with tempfile.TemporaryDirectory(prefix="hyprflux-test-") as temp:
+            script = Path(temp) / 'upstream.sh'
+            script.write_text('set -e\n[[ "$TERM" == xterm-256color ]]\nprintf "UPSTREAM_STARTED\\n"\n')
+            self.check_bash(run + f'''
+                export TERM=dumb
+                TARGET_HOME={temp!r}
+                ARCH_HYPR_DIR={temp!r}
+                TARGET_USER=fixture
+                FAILED_COMPONENTS=()
+                timeout() {{ shift 2; "$@"; }}
+                su() {{ bash -c "${{@: -1}}"; }}
+                run_as_user {str(script)!r}
+                [[ ${{#FAILED_COMPONENTS[@]}} == 0 ]]
+            ''')
+
+    def test_audio_is_verified_offline_and_runtime_activation_remains_first_login(self):
+        wrapper = (ROOT / "airootfs/root/lib/hyprflux-chroot-wrapper.sh").read_text()
+        self.assertNotIn('run_as_user "${INSTALL_SCRIPTS}/pipewire.sh"', wrapper)
+        self.assertNotIn('run_as_user "${INSTALL_SCRIPTS}/02-Final-Check.sh"', wrapper)
+        self.assertIn('pacman -Q pipewire pipewire-audio pipewire-alsa pipewire-pulse wireplumber sof-firmware', wrapper)
+        self.assertIn('systemctl --user enable --now pipewire.socket || session_pending=1', wrapper)
+        self.assertIn('systemctl --user enable --now wireplumber.service || session_pending=1', wrapper)
+        self.assertIn('cliphist kvantum rofi imagemagick swaync wl-clipboard kitty hypridle hyprlock', wrapper)
+
+    def test_resume_does_not_claim_original_embedded_image_acceptance(self):
+        module = smoke_module()
+        original = dict(embedded=True, profile='desktop', bios=False, layout='manual-gpt')
+        resumed = module.resumed_machine(original, 'full')
+        self.assertFalse(resumed['embedded'])
+        self.assertTrue(resumed['resumed'])
+        self.assertEqual(resumed['profile'], 'full')
+        self.assertEqual(resumed['layout'], 'manual-gpt')
+        self.assertTrue(original['embedded'])
+        self.assertEqual(original['profile'], 'desktop')
+
+    def test_theme_module_keeps_repo_intact_and_installs_icons_without_aur_helper(self):
+        wrapper = (ROOT / "airootfs/root/lib/hyprflux-chroot-wrapper.sh").read_text()
+        prepare = "prepare_iso_theme_module() {" + wrapper.split("prepare_iso_theme_module() {", 1)[1].split("\n}", 1)[0] + "\n}"
+        with tempfile.TemporaryDirectory(prefix="hyprflux-test-") as temp:
+            source = Path(temp) / '04-themes.sh'
+            adapted = Path(temp) / 'adapted.sh'
+            original = 'if sudo pacman -S --needed --noconfirm papirus-icon-theme papirus-folders; then echo ICONS_INSTALLED; else exit 17; fi\n'
+            source.write_text(original)
+            self.check_bash(prepare + f'\nprepare_iso_theme_module {str(source)!r} {str(adapted)!r}')
+            self.assertEqual(source.read_text(), original)
+            self.assertEqual(adapted.stat().st_mode & 0o777, 0o644)
+            result = bash(f'''
+                sudo() {{ "$@"; }}
+                pacman() {{ [[ "$*" == '-S --needed --noconfirm papirus-icon-theme' ]]; }}
+                source {str(adapted)!r}
+            ''')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('ICONS_INSTALLED', result.stdout)
+            source.write_text('unexpected upstream command\n')
+            result = bash(prepare + f'\nprepare_iso_theme_module {str(source)!r} {str(adapted)!r}')
+            self.assertNotEqual(result.returncode, 0)
+
     def test_installed_profile_and_missing_application_report_are_explicit(self):
         script = (ROOT / "tests/guest-install.sh").read_text()
         start = script.index('[[ $(cat "$MOUNT_POINT/etc/hyprflux-install-profile")')

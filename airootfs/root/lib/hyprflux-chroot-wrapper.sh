@@ -33,12 +33,14 @@ TARGET_HOME="/home/${TARGET_USER}"
 [[ $EUID -eq 0 && "$TARGET_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ && "$TARGET_USER" != root ]] || exit 1
 id "$TARGET_USER" >/dev/null || exit 1
 FAILED_COMPONENTS=()
+ISO_THEME_MODULE=""
 
 # Always revoke temporary privileges, including on errors and interrupts.
 cleanup_wrapper() {
     rm -f /etc/sudoers.d/hyprflux-temp
     rm -f /usr/local/bin/chsh /usr/local/bin/gsettings /usr/local/bin/nwg-look /usr/local/bin/yay-iso
     rm -f /tmp/hyprflux-module-env.sh
+    if [[ -n "${ISO_THEME_MODULE:-}" ]]; then rm -f -- "$ISO_THEME_MODULE"; fi
 }
 trap cleanup_wrapper EXIT
 trap 'exit 130' INT
@@ -59,6 +61,18 @@ recover_pacman_lock() {
     fi
     echo '[Recovery] Removing stale pacman lock; no package manager is running.'
     rm -f -- "$lock"
+}
+
+prepare_iso_theme_module() {
+    local source="$1" destination="$2"
+    # papirus-folders is not an official-repository package. Do not let the
+    # optional folder-color tool abort installation of the actual icon theme.
+    # Adapt a temporary copy, leaving the pinned upstream checkout untouched.
+    grep -Fq 'pacman -S --needed --noconfirm papirus-icon-theme papirus-folders' "$source" \
+        || { echo '[ERROR] Unrecognized pinned theme-module install command.' >&2; return 1; }
+    sed 's/pacman -S --needed --noconfirm papirus-icon-theme papirus-folders/pacman -S --needed --noconfirm papirus-icon-theme/' \
+        "$source" > "$destination" || return 1
+    chmod 644 "$destination"
 }
 
 # Retain downloaded packages and retry transient HTTPS resets. A failed
@@ -300,7 +314,7 @@ for mirror in \
 done
 RETRY_MIRRORLIST=/etc/pacman.d/mirrorlist
 pacman_retry -Syu --needed --noconfirm hyprland hypridle hyprlock sddm mesa \
-    kitty foot rofi swaync networkmanager pipewire pipewire-pulse pipewire-alsa pipewire-jack wireplumber \
+    kitty foot rofi swaync networkmanager pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-jack wireplumber sof-firmware \
     xdg-desktop-portal-hyprland xdg-desktop-portal-gtk polkit hyprpolkitagent \
     qt6-svg qt6-virtualkeyboard qt6-multimedia xorg-xwayland zsh \
     firefox chromium thunar tumbler thunar-archive-plugin thunar-volman file-roller \
@@ -309,7 +323,7 @@ pacman_retry -Syu --needed --noconfirm hyprland hypridle hyprlock sddm mesa \
     pamixer pavucontrol playerctl brightnessctl nwg-look nwg-displays \
     python-requests python-pyquery python-json5 xdg-user-dirs xdg-utils gvfs gvfs-mtp \
     qt5ct qt6ct kvantum kvantum-qt5 tmux neovim fzf ripgrep fd lsd bat zoxide btop fastfetch yazi yad \
-    adwaita-fonts gsettings-desktop-schemas dconf noto-fonts noto-fonts-emoji noto-fonts-cjk ttf-jetbrains-mono-nerd \
+    adwaita-fonts gsettings-desktop-schemas dconf papirus-icon-theme noto-fonts noto-fonts-emoji noto-fonts-cjk ttf-jetbrains-mono-nerd \
     otf-font-awesome mpv plymouth bc libspng \
     || { echo '[ERROR] Essential desktop package transaction failed.'; exit 1; }
 
@@ -349,6 +363,9 @@ run_as_user() {
     timeout --kill-after=30s 2400 su - "${TARGET_USER}" -s /bin/bash -c "
         export HOME=\"${TARGET_HOME}\"
         export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin\"
+        # Several upstream scripts use set -e with tput during initialization.
+        # A batch chroot may inherit TERM=dumb, making them exit without a log.
+        export TERM=xterm-256color
         export HYPRFLUX_LOGS_DIR=\"${TARGET_HOME}/HyprFlux/logs\"
         cd \"${ARCH_HYPR_DIR}\" 2>/dev/null || cd \"\$HOME\"
         bash \"${script}\"
@@ -364,17 +381,12 @@ mkdir -p "${TARGET_HOME}/HyprFlux/logs/installer"
 chown -R "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/HyprFlux/logs"
 
 # Inject HyprFlux's own zsh.sh over the base one (same as base-installer
-# install.sh does), and run the Chaotic-AUR bootstrap — keeps this wrapper
-# path equivalent to the first-boot path.
+# install.sh does). Official packages and direct AUR builds suffice for the
+# ISO profiles; do not run the optional third-party repository bootstrap here.
 cp "${HYPRFLUX_DIR}/scripts/zsh.sh" "${INSTALL_SCRIPTS}/zsh.sh" 2>/dev/null || true
 chmod +x "${INSTALL_SCRIPTS}/zsh.sh" 2>/dev/null || true
-echo "[A0] Running HyprFlux initial setup (Chaotic-AUR + yay)..."
-if ! command -v yay >/dev/null; then
-    timeout --kill-after=30s 600 su - "${TARGET_USER}" -s /bin/bash -c "bash ${HYPRFLUX_DIR}/scripts/initial.sh" </dev/null \
-        || FAILED_COMPONENTS+=("initial.sh")
-else
-    echo '    Reusing installed AUR helper.'
-fi
+echo '[A0] Using official repositories + direct AUR helper setup (A3).'
+echo '    Optional Chaotic-AUR repository bootstrap is not required by ISO profiles.'
 
 # A1: Base packages
 echo "[A1] Installing base packages..."
@@ -475,7 +487,8 @@ printf '%s\n' "$INSTALL_PROFILE" > /etc/hyprflux-install-profile
 
 # A5: PipeWire audio
 echo "[A5] Installing PipeWire audio stack..."
-run_as_user "${INSTALL_SCRIPTS}/pipewire.sh"
+pacman -Q pipewire pipewire-audio pipewire-alsa pipewire-pulse wireplumber sof-firmware >/dev/null
+echo '    Required audio packages verified; user-service activation is deferred to first login.'
 
 # A6: Fonts
 echo "[A6] Installing fonts..."
@@ -537,9 +550,7 @@ run_as_user "${INSTALL_SCRIPTS}/dotfiles-main.sh"
 
 # A16: Final check
 echo "[A16] Running final check..."
-if [[ "$INSTALL_PROFILE" == full ]]; then
-    run_as_user "${INSTALL_SCRIPTS}/02-Final-Check.sh"
-fi
+echo '    Using ISO final validation below; legacy audit uses obsolete package names.'
 
 echo ""
 echo "    Phase A complete."
@@ -601,6 +612,12 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
         [[ ! -f "$module" ]] && continue
         
         module_name=$(basename "$module")
+        module_script="$module"
+        if [[ "$module_name" == 04-themes.sh ]]; then
+            ISO_THEME_MODULE=$(mktemp /tmp/hyprflux-iso-theme.XXXXXX)
+            prepare_iso_theme_module "$module" "$ISO_THEME_MODULE"
+            module_script="$ISO_THEME_MODULE"
+        fi
         
         echo "    [B] ${module_name}..."
         # A separate strict Bash process preserves errexit even though the
@@ -613,11 +630,15 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
             source lib/common.sh
             source lib/packages.sh
             source lib/git.sh
-            source \"${module}\"
+            source \"${module_script}\"
         " </dev/null || {
             echo "    [WARN] ${module_name} failed; recorded in installation summary."
             FAILED_COMPONENTS+=("$module_name")
         }
+        if [[ -n "$ISO_THEME_MODULE" ]]; then
+            rm -f -- "$ISO_THEME_MODULE"
+            ISO_THEME_MODULE=""
+        fi
     done
 else
     echo "    [ERROR] HyprFlux modules directory not found"
@@ -831,9 +852,10 @@ echo "    Cleanup complete."
 # Enforce postconditions, not the exit status of permissive upstream scripts.
 critical_failed=0
 pacman -Dk || critical_failed=1
-pacman -Qk hyprland sddm pipewire wireplumber networkmanager waybar-git wlogout \
-    firefox chromium thunar gsettings-desktop-schemas dconf || critical_failed=1
-for command in Hyprland kitty rofi waybar wlogout firefox chromium thunar pipewire wireplumber; do
+pacman -Qk hyprland sddm pipewire pipewire-audio pipewire-alsa pipewire-pulse wireplumber sof-firmware networkmanager waybar-git wlogout \
+    cliphist kvantum rofi imagemagick swaync wl-clipboard kitty hypridle hyprlock \
+    firefox chromium thunar gsettings-desktop-schemas dconf papirus-icon-theme || critical_failed=1
+for command in Hyprland kitty rofi waybar wlogout awww-daemon firefox chromium thunar pipewire wireplumber; do
     if ! command -v "$command" >/dev/null; then
         echo "[ERROR] Required desktop command missing: $command"
         critical_failed=1

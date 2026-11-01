@@ -61,6 +61,12 @@ def guest_screenshot(data):
     return image
 
 
+def resumed_machine(metadata, profile):
+    # A desktop-integration resume uses current hot-loaded scripts, even if
+    # the original installation exercised the ISO's embedded installer.
+    return {**metadata, "profile": profile, "embedded": False, "resumed": True}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("iso", nargs="?", type=Path)
@@ -138,11 +144,11 @@ def main():
     if args.boot or args.resume:
         history = state / "previous-attempts" / str(time.time_ns())
         history.mkdir(parents=True)
-        for name in ("serial.log", "qemu.log", "command.txt", "source.sha256", "failure.png", "desktop.png"):
+        for name in ("serial.log", "qemu.log", "command.txt", "source.sha256", "image.sha256", "machine.json", "failure.png", "desktop.png"):
             if (state / name).is_file():
                 shutil.copyfile(state / name, history / name)
     if args.resume:
-        metadata["profile"] = args.profile
+        metadata = resumed_machine(metadata, args.profile)
         (state / "machine.json").write_text(json.dumps(metadata))
     # QEMU UNIX socket paths must fit sockaddr_un (108 bytes).
     import tempfile
