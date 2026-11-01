@@ -34,3 +34,7 @@ skills-lock.json
 hyprflux-test-disk.qcow2
 *.qcow2.ovmf-vars.fd
 *.qcow2.lock
+# Local disposable QEMU regression states and extracted kernels
+.qemu-tests/
+.test-tools/
+__pycache__/

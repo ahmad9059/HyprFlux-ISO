@@ -50,7 +50,8 @@ fi
 # Safety: an interrupted build leaves mount binds inside work/x86_64/airootfs.
 # rm -rf'ing a mounted tree can silently delete the BOUND host data, so abort
 # with instructions instead (see the Arch Wiki archiso warning).
-if findmnt "${WORK_DIR}/x86_64/airootfs" &>/dev/null; then
+if findmnt -rn -o TARGET | awk -v root="$WORK_DIR" \
+    '$0 == root || index($0, root "/") == 1 {found=1} END {exit !found}'; then
     echo "Error: Previous build is still mounted (interrupted build?)."
     echo "Unmount it first:"
     echo "    findmnt ${WORK_DIR}/x86_64/airootfs"
@@ -92,7 +93,10 @@ if [[ -n "$ISO_FILE" ]]; then
     echo ""
 
     # Offer to clean work directory (saves ~5-10GB disk space)
-    read -rp "Clean work directory to free disk space? [Y/n]: " clean_ans
+    clean_ans=n
+    if [[ -t 0 ]]; then
+        read -rp "Clean work directory to free disk space? [Y/n]: " clean_ans || clean_ans=n
+    fi
     if [[ "${clean_ans,,}" != "n" ]]; then
         saved_size=$(du -sh "${WORK_DIR}" 2>/dev/null | cut -f1 || echo "several GB")
         echo "==> Cleaning work directory..."

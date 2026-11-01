@@ -25,6 +25,7 @@ edk2-shell
 networkmanager
 iwd
 iw
+wireless-regdb
 wpa_supplicant
 dhcpcd
 openssh
@@ -34,6 +35,7 @@ wget
 # TUI
 gum
 fzf
+xkeyboard-config
 
 # Utilities
 vim

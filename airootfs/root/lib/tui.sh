@@ -263,8 +263,12 @@ start_progress() {
   local status_msg="${1:-Installing...}"
   _PROGRESS_STATUS="$status_msg"
 
-  # Create log file (fall back to /dev/null if mktemp fails)
-  PROGRESS_LOG=$(mktemp /tmp/hyprflux-progress.XXXXXX 2>/dev/null) || PROGRESS_LOG="/dev/null"
+  # Keep every stage, including failures. Copy live logs before reboot.
+  INSTALL_LOG_DIR="${INSTALL_LOG_DIR:-/var/log/hyprflux-installer}"
+  mkdir -p "$INSTALL_LOG_DIR" || return 1
+  chmod 700 "$INSTALL_LOG_DIR"
+  PROGRESS_LOG=$(mktemp "${INSTALL_LOG_DIR}/stage.XXXXXX.log") || return 1
+  printf '==> %s\n' "$status_msg" >> "$PROGRESS_LOG"
 
   # Ensure banner cache exists
   if [[ -z "$_BANNER_CACHE" ]]; then
@@ -377,10 +381,7 @@ stop_progress() {
     _PROGRESS_PID=""
   fi
 
-  # Clean up log file
-  if [[ -n "$PROGRESS_LOG" && -f "$PROGRESS_LOG" ]]; then
-    rm -f "$PROGRESS_LOG"
-  fi
+  # Logs are deliberately retained for diagnosis.
   PROGRESS_LOG=""
   _PROGRESS_STATUS=""
 
@@ -625,7 +626,6 @@ _tui_cleanup() {
     kill "$_PROGRESS_PID" 2>/dev/null || true
     wait "$_PROGRESS_PID" 2>/dev/null || true
   fi
-  [[ -n "${PROGRESS_LOG:-}" ]] && rm -f "$PROGRESS_LOG" 2>/dev/null
   printf '%s' "${ANSI_SHOW_CURSOR}" 2>/dev/null || true
 }
 trap _tui_cleanup EXIT

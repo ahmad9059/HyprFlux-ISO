@@ -12,10 +12,9 @@ if [[ "$(tty)" == "/dev/tty1" || "$(tty)" == "/dev/ttyS0" ]]; then
     # Brief pause for terminal to fully initialize
     sleep 1
 
-    # Single-instance lock: the second console reports and stays idle.
-    exec 9>/tmp/hyprflux-installer.lock
-    if ! flock -n 9; then
-        printf '\nHyprFlux installer is already running on another console.\n'
+    # Prefer the serial console only when explicitly selected on the kernel
+    # command line. The installer itself owns the single-instance lock.
+    if [[ "$(tty)" == /dev/tty1 ]] && grep -q 'console=ttyS0' /proc/cmdline; then
         return
     fi
 

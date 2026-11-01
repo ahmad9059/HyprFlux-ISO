@@ -20,7 +20,7 @@ Build a custom Arch Linux ISO for **HyprFlux** -- a Hyprland desktop distributio
 
 ```
 ISO Boot Process:
-  UEFI  -> systemd-boot -> kernel + initramfs -> live env
+  UEFI  -> GRUB -> kernel + initramfs -> live env
   BIOS  -> syslinux     -> kernel + initramfs -> live env
 
 Live Environment:
@@ -136,6 +136,15 @@ All shims are cleaned up at the end of the wrapper.
 - Next step: build the ISO and test in QEMU / on hardware
 
 ## Build & Test
+
+Fast regression checks: `python3 -m unittest discover -s tests -v`.
+Automated disposable KVM install/boot tests: see `tests/README.md`.
+Do not treat a passing build or mocked test as proof of an installed desktop.
+Releases remain drafts until the exact image passes the acceptance matrix.
+
+Installer changes must preserve stage logs, propagate critical errors, retain
+real systemctl, and never leave temporary sudo access or shims on failure.
+Target initramfs hook ordering is enforced by `lib/configure-initramfs.sh`.
 
 ```bash
 # Build the ISO (requires archiso package, must run as root)

@@ -39,12 +39,25 @@ The flow is:
 6. Install the base Arch system with `pacstrap`
 7. Configure timezone, locale, users, networking, and GRUB in the target system
 8. Clone a pinned HyprFlux release revision into the target user's home directory
-9. Run the complete package, dotfile, theme, and service pipeline inside chroot
+9. Install the selected application profile, dotfiles, themes, and services inside chroot
 10. Verify GRUB, initramfs, services, and fallback boot artifacts
 11. Reboot into the installed HyprFlux desktop
 
-Only desktop-session operations and failed AUR package recovery are deferred to
-the first-boot fixup.
+Only desktop-session settings are deferred to first login. Failed optional
+applications are listed in `/var/log/hyprflux-installer/missing-applications.txt`
+for manual recovery; first login never silently compiles software or requests sudo.
+
+### Application profiles
+
+- **Desktop (default):** configured Hyprland, Waybar, Rofi, browsers, file manager,
+  audio, networking, fonts and desktop tools, without the extended application bundle.
+- **Full:** the same required desktop plus the upstream editor, chat, AI, media
+  and extended font collections. Extra downloads and AUR builds take longer.
+
+Both profiles install required desktop components before optional applications
+and fail if critical desktop validation fails. The selected profile is recorded
+in `/etc/hyprflux-install-profile`. These changes require a newly built ISO;
+see `tests/STATUS.md` for current verification limits.
 
 ## Key Features
 
@@ -170,6 +183,17 @@ Build output is written to:
 - `out/*.iso.sha256`
 
 ## Testing in QEMU
+
+For fast regression checks, isolated automated installs, source hot-loading and
+post-reboot desktop verification, see [tests/README.md](tests/README.md).
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 tests/qemu-smoke.py path/to.iso
+```
+
+Existing disks are now preserved by default. Use `--boot-disk` to boot one, or
+explicitly pass `--overwrite-disk` when you intend to erase a test disk.
 
 The repository ships a test helper at `test-qemu.sh`.
 

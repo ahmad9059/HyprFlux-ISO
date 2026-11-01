@@ -1,4 +1,6 @@
 #!/bin/bash
+# QEMU option values intentionally contain commas inside one argument.
+# shellcheck disable=SC2054
 # ============================================================================
 # test-qemu.sh — Test the HyprFlux ISO in QEMU
 # ============================================================================
@@ -116,7 +118,7 @@ for arg in "$@"; do
     echo "                or recreating the disk"
     echo "  --fresh-vars  Reset OVMF state (tests the fallback EFI loader)"
     echo "  --allow-stale-iso  Permit an ISO older than profile source files"
-    echo "  --overwrite-disk   Permit deleting an existing custom --disk path"
+    echo "  --overwrite-disk   Permit replacing an existing test disk (destructive)"
     echo "  --disk=PATH   Test disk path (default: ./hyprflux-test-disk.qcow2)"
     echo "  --ram=SIZE    RAM size (default: 8G)"
     echo "  --cpus=N      Number of CPUs (default: 4)"
@@ -135,7 +137,11 @@ done
 
 # Find ISO if not specified (installation mode only)
 if [[ "${BOOT_DISK_ONLY}" != true ]] && [[ -z "${ISO_FILE}" ]]; then
-  ISO_FILE=$(ls -t "${OUT_DIR}"/*.iso 2>/dev/null | head -1)
+  shopt -s nullglob
+  for candidate in "${OUT_DIR}"/*.iso; do
+    [[ -z "$ISO_FILE" || "$candidate" -nt "$ISO_FILE" ]] && ISO_FILE="$candidate"
+  done
+  shopt -u nullglob
   if [[ -z "${ISO_FILE}" ]]; then
     echo "Error: No ISO found in ${OUT_DIR}/"
     echo "Run ./build.sh first to build the ISO."
@@ -200,7 +206,8 @@ if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
   if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
     if [[ -n "${SUDO_USER:-}" ]]; then
       # Recover the sudo caller's runtime dir so Wayland works as root too.
-      export XDG_RUNTIME_DIR="/run/user/$(id -u "${SUDO_USER}" 2>/dev/null || echo 1000)"
+      XDG_RUNTIME_DIR="/run/user/$(id -u "${SUDO_USER}" 2>/dev/null || echo 1000)"
+      export XDG_RUNTIME_DIR
       echo "Note: sudo stripped XDG_RUNTIME_DIR — re-exported for ${SUDO_USER}."
     else
       broken_display="XDG_RUNTIME_DIR is unset (Wayland display unusable)"
@@ -242,6 +249,7 @@ build_qemu_cmd() {
   local mode="$1"
   QEMU_CMD=(
     qemu-system-x86_64
+    -machine q35
     -m "${RAM}"
     -smp "${CPUS}"
   )
@@ -269,7 +277,7 @@ build_qemu_cmd() {
     QEMU_CMD+=(-device isa-serial,chardev=serial0)
     QEMU_CMD+=(-device virtio-vga)
     if [[ "${USE_VNC}" == true ]]; then
-      QEMU_CMD+=(-vnc :0)
+      QEMU_CMD+=(-vnc 127.0.0.1:0)
     fi
     ;;
   software)
@@ -338,11 +346,18 @@ build_qemu_cmd() {
   )
 }
 
-# Always recreate the test disk for a fresh install: delete any previous
-# qcow2 first (clean start every run), then create a new one.
-# Failure handling is deliberate: /tmp has the sticky bit, so a stale
-# root-owned file from an earlier `sudo` run makes a fixed /tmp name
-# un-creatable. Fall back to a unique per-user name with numbered retries.
+# Lock BEFORE creating or deleting anything. Checking after unlinking a running
+# VM's disk destroys its pathname and can corrupt a concurrent installation.
+[[ "$DISK_IMAGE" == *.qcow2 && ! -L "$DISK_IMAGE" ]] || {
+  echo 'Error: Test disk must be a regular .qcow2 path, not a symlink/device.'
+  exit 1
+}
+exec 9>"${DISK_IMAGE}.lock"
+if ! flock -n 9; then
+  echo "Error: Test disk is already in use: ${DISK_IMAGE}"
+  exit 1
+fi
+
 create_test_disk() {
   local path="$1"
   rm -f "${path}" 2>/dev/null || true
@@ -355,22 +370,13 @@ if [[ "${BOOT_DISK_ONLY}" == true ]]; then
     echo "Error: Installed test disk not found: ${DISK_IMAGE}"
     exit 1
   fi
-elif [[ "${DISK_EXPLICIT}" == true && -e "${DISK_IMAGE}" && "${OVERWRITE_DISK}" != true ]]; then
-  echo "Error: Refusing to delete existing custom disk: ${DISK_IMAGE}"
+elif [[ -e "${DISK_IMAGE}" && "${OVERWRITE_DISK}" != true ]]; then
+  echo "Error: Refusing to delete existing test disk: ${DISK_IMAGE}"
   echo "Pass --overwrite-disk only when a destructive fresh install is intended."
   exit 1
 elif ! create_test_disk "${DISK_IMAGE}"; then
-  uid=$(id -u)
-  DISK_IMAGE="${TMPDIR:-/tmp}/hyprflux-test-disk-${uid}.qcow2"
-  if ! create_test_disk "${DISK_IMAGE}"; then
-    for i in 1 2 3 4 5; do
-      DISK_IMAGE="${TMPDIR:-/tmp}/hyprflux-test-disk-${uid}-${i}.qcow2"
-      if create_test_disk "${DISK_IMAGE}"; then
-        break
-      fi
-    done
-  fi
-  echo "Configured disk path not usable — using ${DISK_IMAGE}"
+  echo "Error: Cannot create test disk: ${DISK_IMAGE}"
+  exit 1
 fi
 
 disk_info_error=""
@@ -385,15 +391,8 @@ if ! disk_info_error=$(qemu-img info "${DISK_IMAGE}" 2>&1 >/dev/null); then
 fi
 unset disk_info_error
 
-# Prevent concurrent QEMU processes from writing the same disk/firmware state.
-exec 9>"${DISK_IMAGE}.lock"
-if ! flock -n 9; then
-  echo "Error: Test disk is already in use: ${DISK_IMAGE}"
-  exit 1
-fi
-
 try_modes=("${DISPLAY_MODE}")
-if [[ "${DISPLAY_MODE}" == "gl" ]]; then
+if [[ "${DISPLAY_MODE}" == "gl" && "${SERIAL_MODE}" != true ]]; then
   try_modes+=("software" "headless")
 fi
 

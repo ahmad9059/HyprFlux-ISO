@@ -23,13 +23,14 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed archiso grub git
+          pacman -S --noconfirm --needed archiso grub git python
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Shell syntax and boot-contract checks
         run: |
+          python -m unittest discover -s tests -v
           FAIL=0
           while IFS= read -r -d '' f; do
             bash -n "$f" 2>/dev/null || { echo "BASH SYNTAX FAIL: $f"; FAIL=1; }
@@ -131,10 +132,12 @@ jobs:
 
             - 64-bit x86 processor
             - 4GB+ RAM (8GB recommended)
-            - 20GB+ disk space
+            - 26 GiB+ disk space, plus any swap
             - Internet connection during installation
           files: |
             artifacts/**/*.iso
             artifacts/**/*.sha256
-          draft: false
+          # A successful ISO build is not an installed-desktop acceptance test.
+          # Publish only after the exact image passes tests/README.md's matrix.
+          draft: true
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}

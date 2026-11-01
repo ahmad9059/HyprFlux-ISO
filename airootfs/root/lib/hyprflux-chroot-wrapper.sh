@@ -22,7 +22,173 @@ set -uo pipefail
 
 TARGET_USER="$1"
 HAS_NVIDIA="$2"
+NVIDIA_DRIVER="${3:-nouveau}"
+XKB_LAYOUT="${4:-us}"
+XKB_VARIANT="${5:-}"
+INSTALL_PROFILE="${6:-full}"
+[[ "$INSTALL_PROFILE" == desktop || "$INSTALL_PROFILE" == full ]] || exit 1
+[[ "$NVIDIA_DRIVER" == open || "$NVIDIA_DRIVER" == nouveau ]] || exit 1
+[[ "$XKB_LAYOUT" =~ ^[a-zA-Z0-9_+-]+$ && "$XKB_VARIANT" =~ ^[a-zA-Z0-9_+-]*$ ]] || exit 1
 TARGET_HOME="/home/${TARGET_USER}"
+[[ $EUID -eq 0 && "$TARGET_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ && "$TARGET_USER" != root ]] || exit 1
+id "$TARGET_USER" >/dev/null || exit 1
+FAILED_COMPONENTS=()
+
+# Always revoke temporary privileges, including on errors and interrupts.
+cleanup_wrapper() {
+    rm -f /etc/sudoers.d/hyprflux-temp
+    rm -f /usr/local/bin/chsh /usr/local/bin/gsettings /usr/local/bin/nwg-look /usr/local/bin/yay-iso
+    rm -f /tmp/hyprflux-module-env.sh
+}
+trap cleanup_wrapper EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+recover_pacman_lock() {
+    local lock="$1"
+    [[ -e "$lock" ]] || return 0
+    if ! command -v pgrep >/dev/null; then
+        echo '[ERROR] Cannot safely inspect package-manager processes; keeping database lock.'
+        return 1
+    fi
+    local process_status=0
+    pgrep -x 'pacman|yay|paru|pamac-daemon|packagekitd' >/dev/null || process_status=$?
+    if (( process_status != 1 )); then
+        echo '[ERROR] A package manager is running or inspection failed; keeping database lock.'
+        return 1
+    fi
+    echo '[Recovery] Removing stale pacman lock; no package manager is running.'
+    rm -f -- "$lock"
+}
+
+# Retain downloaded packages and retry transient HTTPS resets. A failed
+# transaction does not imply that the selected package set is invalid.
+rotate_mirrors() {
+    local destination="$1" candidate
+    candidate=$(mktemp "${destination}.XXXXXX") || return 1
+    if awk '/^[[:space:]]*Server[[:space:]]*=/ && !saved {saved=$0; next} {print} END {if(saved) print saved}' \
+        "$destination" > "$candidate"; then
+        chmod 644 "$candidate"
+        mv -f "$candidate" "$destination"
+    else
+        rm -f "$candidate"
+        return 1
+    fi
+}
+
+pacman_retry() {
+    local attempt
+    for attempt in 1 2 3; do
+        if pacman "$@"; then return 0; fi
+        if (( attempt < 3 )); then
+            echo "[WARN] Package transaction failed; retrying ($attempt/3)..."
+            if [[ -n "${RETRY_MIRRORLIST:-}" && -f "$RETRY_MIRRORLIST" ]]; then
+                rotate_mirrors "$RETRY_MIRRORLIST" \
+                    || echo '[WARN] Could not rotate mirror priority.'
+            fi
+            sleep 5
+        fi
+    done
+    return 1
+}
+
+desktop_commands_present() {
+    pacman -Q waybar-git wlogout >/dev/null 2>&1 \
+        && command -v waybar >/dev/null && command -v wlogout >/dev/null
+}
+
+normalize_hyprland_defaults() {
+    local settings="$1"
+    [[ -f "$settings" ]] || return 0
+    # The pinned dots redundantly set the default scale of 1. Hyprland 0.57
+    # deprecates this key; omitting it preserves the default without warnings.
+    # Do not silently discard a user's non-default special-workspace scale.
+    sed -i '/^[[:space:]]*special_scale_factor[[:space:]]*=[[:space:]]*1\(\.0\+\)\{0,1\}[[:space:]]*,[[:space:]]*\(--.*\)\{0,1\}$/d' "$settings"
+}
+
+install_waybar_session_service() {
+    local home="$1"
+    mkdir -p "$home/.config/systemd/user" "$home/.local/bin"
+    cat > "$home/.config/systemd/user/hyprflux-waybar.service" <<'WAYBAR_SERVICE_EOF'
+[Unit]
+Description=HyprFlux Waybar
+PartOf=graphical-session.target
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/waybar
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+WAYBAR_SERVICE_EOF
+    cat > "$home/.local/bin/hyprflux-start-waybar.sh" <<'WAYBAR_START_EOF'
+#!/bin/bash
+set -euo pipefail
+mkdir -p "$HOME/.local/state/hyprflux"
+exec >>"$HOME/.local/state/hyprflux/session-start.log" 2>&1
+: "${WAYLAND_DISPLAY:?Wayland session required}"
+: "${HYPRLAND_INSTANCE_SIGNATURE:?Hyprland session required}"
+export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-Hyprland}"
+# Import synchronously: independent Lua exec calls do not establish ordering.
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP
+systemctl --user import-environment WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP
+# Finish first-login GTK exports before the bar loads its theme. An XDG
+# autostart duplicate may already own the lock, so wait for that copy as well.
+timeout --kill-after=2s 60 bash "$HOME/.local/bin/hyprflux-first-boot.sh" \
+    || echo '[WARN] First-login setup needs attention; see first-boot.log.'
+flock -w 30 "$HOME/.local/state/hyprflux/first-boot.lock" true \
+    || echo '[WARN] First-login setup is still running.'
+systemctl --user daemon-reload
+# An installed unit may never have been loaded on a fresh user manager.
+systemctl --user reset-failed hyprflux-waybar.service 2>/dev/null || true
+systemctl --user restart hyprflux-waybar.service
+WAYBAR_START_EOF
+    chmod 755 "$home/.local/bin/hyprflux-start-waybar.sh"
+    local startup="$home/.config/hypr/UserConfigs/startup-apps.lua"
+    if [[ -f "$startup" ]]; then
+        sed -i 's/hl\.exec_cmd("waybar")/-- Waybar is managed by the HyprFlux session launcher./' "$startup"
+    fi
+}
+
+normalize_and_validate_waybar() {
+    local directory="$1"
+    # Pinned hardware detection replaces a multi-line hwmon array but drops its
+    # comma. Repair that precise generated form; reject other malformed JSONC.
+    sed -i 's/^\([[:space:]]*"hwmon-path"[[:space:]]*:[[:space:]]*\[.*\]\)[[:space:]]*$/\1,/' \
+        "$directory/Modules" || return 1
+    python - "$directory" <<'WAYBAR_VALIDATE_EOF'
+from pathlib import Path
+import sys
+import json5
+
+directory = Path(sys.argv[1])
+for name in ("config", "Modules", "ModulesWorkspaces", "ModulesCustom", "ModulesGroups", "UserModules"):
+    path = directory / name
+    try:
+        with path.open(encoding="utf-8") as stream:
+            json5.load(stream)
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"[ERROR] Invalid Waybar configuration {path}: {error}")
+    print(f"[OK] Waybar JSONC parsed: {path}")
+WAYBAR_VALIDATE_EOF
+}
+
+install_desktop_aur() {
+    local attempt
+    for attempt in 1 2 3; do
+        if desktop_commands_present; then return 0; fi
+        timeout --kill-after=30s 1800 su - "$TARGET_USER" -s /bin/bash -c \
+            'yay -S --needed --noconfirm waybar-git wlogout' </dev/null || true
+        if desktop_commands_present; then return 0; fi
+        rotate_mirrors "$RETRY_MIRRORLIST" || true
+    done
+    echo '[ERROR] Required Waybar/wlogout installation failed.'
+    return 1
+}
 
 echo "============================================"
 echo "  HyprFlux Chroot Wrapper"
@@ -119,11 +285,33 @@ chmod +x /usr/local/bin/nwg-look
 echo "${TARGET_USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/hyprflux-temp
 chmod 440 /etc/sudoers.d/hyprflux-temp
 
-# --- Permanent NARROW passwordless rule: pacman only ---
-# Enables yay/AUR usage for the user in the desktop session (the first-boot
-# AUR install depends on it). Same pattern CachyOS uses for AUR helpers.
-echo "${TARGET_USER} ALL=(ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/hyprflux-pacman
-chmod 440 /etc/sudoers.d/hyprflux-pacman
+# pacman can execute package hooks as root. Never grant it permanent NOPASSWD.
+rm -f /etc/sudoers.d/hyprflux-pacman
+visudo -cf /etc/sudoers.d/hyprflux-temp || exit 1
+
+# A usable desktop must not depend on an optional AUR/application batch.
+recover_pacman_lock /var/lib/pacman/db.lck || exit 1
+for mirror in \
+    'https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
+    'https://mirrors.mit.edu/archlinux/$repo/os/$arch' \
+    'https://mirror.rackspace.com/archlinux/$repo/os/$arch'; do
+    grep -Fxq "Server = $mirror" /etc/pacman.d/mirrorlist \
+        || printf 'Server = %s\n' "$mirror" >> /etc/pacman.d/mirrorlist
+done
+RETRY_MIRRORLIST=/etc/pacman.d/mirrorlist
+pacman_retry -Syu --needed --noconfirm hyprland hypridle hyprlock sddm mesa \
+    kitty foot rofi swaync networkmanager pipewire pipewire-pulse pipewire-alsa pipewire-jack wireplumber \
+    xdg-desktop-portal-hyprland xdg-desktop-portal-gtk polkit hyprpolkitagent \
+    qt6-svg qt6-virtualkeyboard qt6-multimedia xorg-xwayland zsh \
+    firefox chromium thunar tumbler thunar-archive-plugin thunar-volman file-roller \
+    network-manager-applet power-profiles-daemon wireless-regdb bluez bluez-utils blueman \
+    wl-clipboard cliphist grim slurp hyprpicker swappy imagemagick jq \
+    pamixer pavucontrol playerctl brightnessctl nwg-look nwg-displays \
+    python-requests python-pyquery python-json5 xdg-user-dirs xdg-utils gvfs gvfs-mtp \
+    qt5ct qt6ct kvantum kvantum-qt5 tmux neovim fzf ripgrep fd lsd bat zoxide btop fastfetch yazi yad \
+    adwaita-fonts gsettings-desktop-schemas dconf noto-fonts noto-fonts-emoji noto-fonts-cjk ttf-jetbrains-mono-nerd \
+    otf-font-awesome mpv plymouth bc libspng \
+    || { echo '[ERROR] Essential desktop package transaction failed.'; exit 1; }
 
 # --- Pre-set shell to zsh (only if zsh is already installed) ---
 # zsh.sh in Phase A installs zsh; we set the shell after that runs.
@@ -152,19 +340,21 @@ run_as_user() {
     script_name=$(basename "$script")
 
     if [[ ! -f "$script" ]]; then
-        echo "    [SKIP] ${script_name} (not found)"
+        echo "    [WARN] ${script_name} (not found)"
+        FAILED_COMPONENTS+=("$script_name")
         return 0
     fi
 
     echo "    Running ${script_name}..."
-    su - "${TARGET_USER}" -s /bin/bash -c "
+    timeout --kill-after=30s 2400 su - "${TARGET_USER}" -s /bin/bash -c "
         export HOME=\"${TARGET_HOME}\"
         export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin\"
         export HYPRFLUX_LOGS_DIR=\"${TARGET_HOME}/HyprFlux/logs\"
         cd \"${ARCH_HYPR_DIR}\" 2>/dev/null || cd \"\$HOME\"
         bash \"${script}\"
-    " || {
+    " </dev/null || {
         echo "    [WARN] ${script_name} had issues (continuing)"
+        FAILED_COMPONENTS+=("$script_name")
         return 0
     }
 }
@@ -179,7 +369,12 @@ chown -R "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/HyprFlux/logs"
 cp "${HYPRFLUX_DIR}/scripts/zsh.sh" "${INSTALL_SCRIPTS}/zsh.sh" 2>/dev/null || true
 chmod +x "${INSTALL_SCRIPTS}/zsh.sh" 2>/dev/null || true
 echo "[A0] Running HyprFlux initial setup (Chaotic-AUR + yay)..."
-su - "${TARGET_USER}" -s /bin/bash -c "bash ${HYPRFLUX_DIR}/scripts/initial.sh" 2>/dev/null ||     echo "    [WARN] initial.sh had issues (continuing)"
+if ! command -v yay >/dev/null; then
+    timeout --kill-after=30s 600 su - "${TARGET_USER}" -s /bin/bash -c "bash ${HYPRFLUX_DIR}/scripts/initial.sh" </dev/null \
+        || FAILED_COMPONENTS+=("initial.sh")
+else
+    echo '    Reusing installed AUR helper.'
+fi
 
 # A1: Base packages
 echo "[A1] Installing base packages..."
@@ -191,7 +386,7 @@ run_as_user "${INSTALL_SCRIPTS}/pacman.sh"
 
 # A3: Install yay (AUR helper)
 echo "[A3] Installing yay AUR helper..."
-run_as_user "${INSTALL_SCRIPTS}/yay.sh"
+if ! command -v yay >/dev/null; then run_as_user "${INSTALL_SCRIPTS}/yay.sh"; fi
 
 # Verify yay was installed and is in PATH
 if ! command -v yay &>/dev/null && ! su - "${TARGET_USER}" -s /bin/bash -c "command -v yay" &>/dev/null; then
@@ -214,7 +409,8 @@ if [[ -f /usr/bin/yay ]] && [[ ! -L /usr/local/bin/yay ]]; then
 fi
 
 # Export yay path for scripts that source Global_functions.sh
-export YAY_PATH=$(command -v yay || su - "${TARGET_USER}" -s /bin/bash -c "command -v yay" 2>/dev/null || echo "")
+YAY_PATH=$(command -v yay || su - "${TARGET_USER}" -s /bin/bash -c "command -v yay" 2>/dev/null || echo "")
+export YAY_PATH
 if [[ -n "$YAY_PATH" ]]; then
     echo "    yay is available at: $YAY_PATH"
     # Create wrapper to ensure yay is always found
@@ -229,6 +425,9 @@ fi
 
 # A4: Hyprland packages
 echo "[A4] Installing Hyprland ecosystem packages..."
+# Install the session-critical AUR components BEFORE optional multi-gigabyte
+# application batches. A timed-out media bundle must not leave Waybar missing.
+install_desktop_aur || exit 1
 # Patch Global_functions.sh to ensure ISAUR is set correctly for chroot
 if [[ -f "${INSTALL_SCRIPTS}/Global_functions.sh" ]]; then
     # Backup original
@@ -236,10 +435,14 @@ if [[ -f "${INSTALL_SCRIPTS}/Global_functions.sh" ]]; then
     # Replace the ISAUR line to use a fallback
     sed -i 's/^ISAUR=$(command -v yay || command -v paru)/ISAUR=$(command -v yay || command -v paru || echo "\/usr\/bin\/yay")/' "${INSTALL_SCRIPTS}/Global_functions.sh"
 fi
-run_as_user "${INSTALL_SCRIPTS}/01-hypr-pkgs.sh"
+if [[ "$INSTALL_PROFILE" == full ]]; then
+    run_as_user "${INSTALL_SCRIPTS}/01-hypr-pkgs.sh"
+else
+    echo '    Desktop essentials installed; extended application bundle not selected.'
+fi
 
-# A4b: Post-check and retry AUR packages. This also repairs installs from a
-# pinned HyprFlux revision where one failed package could stop the AUR loop.
+# A4b: Record missing optional applications without repeating expensive builds.
+if [[ "$INSTALL_PROFILE" == full ]]; then
 AUR_PACKAGES=(mpvpaper waybar-git visual-studio-code-bin 64gram-desktop-bin vesktop \
               foliate localsend-bin tuxedo-bin claude-code opencode-bin openai-codex-bin \
               freedownloadmanager)
@@ -251,32 +454,24 @@ for _aur_pkg in "${AUR_PACKAGES[@]}"; do
 done
 if [ ${#AUR_MISSING[@]} -gt 0 ]; then
   echo "    [WARN] AUR packages missing after Phase A: ${AUR_MISSING[*]}"
-  echo "           Retrying each package, with a forced AUR fallback..."
-  AUR_STILL_MISSING=()
-  for _aur_pkg in "${AUR_MISSING[@]}"; do
-    echo "    [RETRY] ${_aur_pkg}"
-    if ! su - "${TARGET_USER}" -s /bin/bash -c \
-      "timeout 3600 yay -S --needed --noconfirm '${_aur_pkg}'"; then
-      echo "            Repository attempt failed; trying the AUR PKGBUILD..."
-      su - "${TARGET_USER}" -s /bin/bash -c \
-        "timeout 3600 yay -S --aur --needed --noconfirm '${_aur_pkg}'" || true
-    fi
-    su - "${TARGET_USER}" -s /bin/bash -c \
-      "yay -Q '${_aur_pkg}' >/dev/null 2>&1" 2>/dev/null || AUR_STILL_MISSING+=("$_aur_pkg")
-  done
-
-  AUR_MISSING=("${AUR_STILL_MISSING[@]}")
+  echo "           Optional applications are recorded for manual recovery; no repeated hour-long build loops."
+  mkdir -p /var/log/hyprflux-installer
+  printf '%s\n' "${AUR_MISSING[@]}" > /var/log/hyprflux-installer/missing-applications.txt
   if [ ${#AUR_MISSING[@]} -gt 0 ]; then
     echo "    [WARN] AUR packages still missing: ${AUR_MISSING[*]}"
-    echo "           They will be retried at first boot (desktop session)."
+    echo "           After login: yay -S --needed <package>"
     echo "           Last lines of the install log for diagnosis:"
-    _pkg_log="${TARGET_HOME}/HyprFlux/logs/installer/"*_hypr-pkgs.log
-    tail -25 ${_pkg_log} 2>/dev/null | sed 's/^/           /'
+    _pkg_log=("${TARGET_HOME}/HyprFlux/logs/installer/"*_hypr-pkgs.log)
+    tail -25 "${_pkg_log[@]}" 2>/dev/null | sed 's/^/           /'
   else
     echo "    [OK] All missing AUR packages installed during retry."
   fi
 fi
 unset _aur_pkg AUR_PACKAGES AUR_MISSING AUR_STILL_MISSING _pkg_log
+else
+    rm -f /var/log/hyprflux-installer/missing-applications.txt
+fi
+printf '%s\n' "$INSTALL_PROFILE" > /etc/hyprflux-install-profile
 
 # A5: PipeWire audio
 echo "[A5] Installing PipeWire audio stack..."
@@ -284,7 +479,11 @@ run_as_user "${INSTALL_SCRIPTS}/pipewire.sh"
 
 # A6: Fonts
 echo "[A6] Installing fonts..."
-run_as_user "${INSTALL_SCRIPTS}/fonts.sh"
+if [[ "$INSTALL_PROFILE" == full ]]; then
+    run_as_user "${INSTALL_SCRIPTS}/fonts.sh"
+else
+    echo '    Desktop fonts are already installed; skipping the extended font collection.'
+fi
 
 # A7: Hyprland compositor
 echo "[A7] Installing Hyprland compositor..."
@@ -300,8 +499,20 @@ run_as_user "${INSTALL_SCRIPTS}/sddm.sh"
 
 # A10: NVIDIA drivers (conditional)
 if [[ "${HAS_NVIDIA}" == "yes" ]]; then
-    echo "[A10] Installing NVIDIA drivers..."
-    run_as_user "${INSTALL_SCRIPTS}/nvidia.sh"
+    if [[ "$NVIDIA_DRIVER" == open ]]; then
+        echo '[A10] Installing current NVIDIA open drivers and matching kernel headers...'
+        pacman_retry -S --needed --noconfirm linux-headers nvidia-open-dkms nvidia-utils nvidia-settings \
+            || { echo '[ERROR] NVIDIA driver installation failed.'; exit 1; }
+        mkdir -p /etc/mkinitcpio.conf.d /etc/modprobe.d
+        echo 'MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)' > /etc/mkinitcpio.conf.d/90-hyprflux-nvidia.conf
+        echo 'options nvidia_drm modeset=1 fbdev=1' > /etc/modprobe.d/hyprflux-nvidia.conf
+        for kernel in /usr/lib/modules/*; do
+            [[ -f "$kernel/pkgbase" ]] || continue
+            modinfo -k "${kernel##*/}" nvidia >/dev/null || exit 1
+        done
+    else
+        echo '[A10] Using in-kernel Nouveau with Mesa (legacy/recovery option).'
+    fi
 else
     echo "[A10] Skipping NVIDIA (not detected)"
 fi
@@ -326,7 +537,9 @@ run_as_user "${INSTALL_SCRIPTS}/dotfiles-main.sh"
 
 # A16: Final check
 echo "[A16] Running final check..."
-run_as_user "${INSTALL_SCRIPTS}/02-Final-Check.sh"
+if [[ "$INSTALL_PROFILE" == full ]]; then
+    run_as_user "${INSTALL_SCRIPTS}/02-Final-Check.sh"
+fi
 
 echo ""
 echo "    Phase A complete."
@@ -377,6 +590,9 @@ export ICON_DIR="${TARGET_HOME}/.local/share/icons/apps"
 export WEBAPPS_CONF="${HYPRFLUX_DIR}/config/webapps.conf"
 export WAYBAR_STYLE_TARGET="${TARGET_HOME}/.config/waybar/style.css"
 export WAYBAR_LAYOUT_TARGET="${TARGET_HOME}/.config/waybar/config"
+export CUSTOM_WAYBAR_STYLE="${TARGET_HOME}/.config/waybar/style/HyprFlux-Default.css"
+export CUSTOM_WAYBAR_LAYOUT="${TARGET_HOME}/.config/waybar/configs/HyprFlux-Default-Laptop"
+export BIBATA_CURSOR_URL="https://github.com/LOSEARDES77/Bibata-Cursor-hyprcursor/releases/download/1.0/hypr_Bibata-Modern-Classic.tar.gz"
 MODULE_ENV_EOF
 
 # Run modules in order
@@ -386,43 +602,56 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
         
         module_name=$(basename "$module")
         
-        case "$module_name" in
-            07-gtk.sh)
-                # gsettings requires dbus - deferred to first-boot
-                echo "    [B] ${module_name} (gsettings deferred to first-boot)"
-                su - "${TARGET_USER}" -s /bin/bash -c "
-                    export HOME=\"${TARGET_HOME}\"
-                    source \"${CONFIG_ENV_FILE}\" 2>/dev/null || true
-                    cd \"${HYPRFLUX_DIR}\" 2>/dev/null || true
-                    source lib/common.sh 2>/dev/null || true
-                    source lib/packages.sh 2>/dev/null || true
-                    source lib/git.sh 2>/dev/null || true
-                    source \"${module}\"
-                " 2>/dev/null || true
-                ;;
-
-            *)
-                echo "    [B] ${module_name}..."
-                su - "${TARGET_USER}" -s /bin/bash -c "
-                    export HOME=\"${TARGET_HOME}\"
-                    source \"${CONFIG_ENV_FILE}\" 2>/dev/null || true
-                    cd \"${HYPRFLUX_DIR}\" 2>/dev/null || true
-                    source lib/common.sh 2>/dev/null || true
-                    source lib/packages.sh 2>/dev/null || true
-                    source lib/git.sh 2>/dev/null || true
-                    source \"${module}\"
-                " 2>/dev/null || {
-                    echo "    [WARN] ${module_name} had issues (continuing)"
-                }
-                ;;
-        esac
+        echo "    [B] ${module_name}..."
+        # A separate strict Bash process preserves errexit even though the
+        # parent collects failures. Never suppress stderr: it is diagnostic.
+        timeout --kill-after=30s 1200 su - "${TARGET_USER}" -s /bin/bash -c "
+            set -e
+            export HOME=\"${TARGET_HOME}\"
+            source \"${CONFIG_ENV_FILE}\"
+            cd \"${HYPRFLUX_DIR}\"
+            source lib/common.sh
+            source lib/packages.sh
+            source lib/git.sh
+            source \"${module}\"
+        " </dev/null || {
+            echo "    [WARN] ${module_name} failed; recorded in installation summary."
+            FAILED_COMPONENTS+=("$module_name")
+        }
     done
 else
-    echo "    [WARN] HyprFlux modules directory not found"
+    echo "    [ERROR] HyprFlux modules directory not found"
+    exit 1
 fi
 
 echo ""
 echo "    Phase B complete."
+
+normalize_hyprland_defaults "${TARGET_HOME}/.config/hypr/UserConfigs/user-settings.lua"
+normalize_and_validate_waybar "${TARGET_HOME}/.config/waybar" || exit 1
+
+# A chroot has no desktop session. Do not persist its guessed 1080p mode or
+# live-environment DRM card numbers (those can change after driver installation).
+if [[ -d "${TARGET_HOME}/.config/hypr" ]]; then
+    cat > "${TARGET_HOME}/.config/hypr/monitors.lua" <<'MONITORS_EOF'
+-- Use the connected display's native mode, not the installer's display.
+hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })
+MONITORS_EOF
+    printf 'monitor=,preferred,auto,1\n' > "${TARGET_HOME}/.config/hypr/monitors.conf"
+    gpu_env="${TARGET_HOME}/.config/hypr/UserConfigs/env-variables.lua"
+    if [[ -f "$gpu_env" ]]; then
+        sed -i '/hl\.env("AQ_DRM_DEVICES",/d' "$gpu_env"
+    fi
+fi
+
+if [[ "$HAS_NVIDIA" == yes && "$NVIDIA_DRIVER" == nouveau ]]; then
+    gpu_env="${TARGET_HOME}/.config/hypr/UserConfigs/env-variables.lua"
+    if [[ -f "$gpu_env" ]]; then
+        # Upstream detects the vendor, not the selected kernel driver. Its
+        # NVIDIA GBM/VAAPI overrides are invalid when running Nouveau.
+        sed -i '/>>> GPU_CONFIG_START >>>/,/>>> GPU_CONFIG_END <<</{ />>> GPU_CONFIG/!d; }' "$gpu_env"
+    fi
+fi
 
 # ============================================================================
 # PHASE C: Enable system services
@@ -495,6 +724,11 @@ cat > "${TARGET_HOME}/.local/bin/hyprflux-first-boot.sh" << 'FIRSTBOOT_EOF'
 # Applies settings that couldn't be configured in chroot (no dbus)
 
 MARKER="$HOME/.config/hyprflux-first-boot-done"
+mkdir -p "$HOME/.local/state/hyprflux"
+exec 9>"$HOME/.local/state/hyprflux/first-boot.lock"
+flock -n 9 || exit 0
+exec >>"$HOME/.local/state/hyprflux/first-boot.log" 2>&1
+session_pending=0
 
 # Only run once
 if [[ -f "$MARKER" ]]; then
@@ -506,64 +740,58 @@ sleep 3
 
 # Apply GTK theme via gsettings
 if command -v gsettings &>/dev/null; then
-    gsettings set org.gnome.desktop.interface gtk-theme "HyprFlux-Compact" 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark" 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface cursor-theme "Bibata-Modern-Classic" 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface cursor-size 24 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface font-name "Noto Sans 11" 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface color-scheme "prefer-dark" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface gtk-theme "HyprFlux-Compact" || session_pending=1
+    gsettings set org.gnome.desktop.interface icon-theme "Papirus-Dark" || session_pending=1
+    gsettings set org.gnome.desktop.interface cursor-theme "Future-black Cursors" || session_pending=1
+    gsettings set org.gnome.desktop.interface cursor-size 24 || session_pending=1
+    gsettings set org.gnome.desktop.interface font-name "Adwaita Sans 11" || session_pending=1
+    gsettings set org.gnome.desktop.interface color-scheme "prefer-dark" || session_pending=1
 fi
 
-# Apply nwg-look if available
+# Export the gsettings just applied into GTK config files. Do not use -a:
+# that restores a prior nwg-look backup, which a fresh installation lacks.
 if command -v nwg-look &>/dev/null; then
-    nwg-look -a 2>/dev/null || true
+    nwg-look -x || session_pending=1
 fi
 
 # Enable pipewire user services
-systemctl --user enable --now pipewire.socket 2>/dev/null || true
-systemctl --user enable --now pipewire-pulse.socket 2>/dev/null || true
-systemctl --user enable --now wireplumber.service 2>/dev/null || true
+systemctl --user enable --now pipewire.socket || session_pending=1
+systemctl --user enable --now pipewire-pulse.socket || session_pending=1
+systemctl --user enable --now wireplumber.service || session_pending=1
 
-# Install AUR packages that remain missing. Keep the autostart entry until all
-# required packages are present so a temporary network failure can recover on
-# a later login.
-AUR_LOG="$HOME/HyprFlux/logs/first-boot-aur.log"
-mkdir -p "$(dirname "$AUR_LOG")"
-aur_pending=0
-if command -v yay &>/dev/null; then
-    AUR_PACKAGES=(mpvpaper waybar-git visual-studio-code-bin 64gram-desktop-bin vesktop
-                  foliate localsend-bin tuxedo-bin claude-code opencode-bin openai-codex-bin
-                  freedownloadmanager)
-    for _aur_pkg in "${AUR_PACKAGES[@]}"; do
-        if ! yay -Q "$_aur_pkg" &>/dev/null; then
-            notify-send "HyprFlux" "Installing $_aur_pkg..." 2>/dev/null || true
-            if ! timeout 3600 yay -S --needed --noconfirm "$_aur_pkg" >> "$AUR_LOG" 2>&1; then
-                timeout 3600 yay -S --aur --needed --noconfirm "$_aur_pkg" >> "$AUR_LOG" 2>&1 || true
-            fi
-            if yay -Q "$_aur_pkg" &>/dev/null; then
-                notify-send "HyprFlux" "$_aur_pkg installed." 2>/dev/null || true
-            else
-                aur_pending=1
-                notify-send "HyprFlux" "$_aur_pkg still failed; it will retry next login." 2>/dev/null || true
-            fi
-        fi
-    done
-    unset _aur_pkg AUR_PACKAGES
-else
-    aur_pending=1
+# Never compile software or ask for sudo in a graphical autostart process.
+if [[ -s /var/log/hyprflux-installer/missing-applications.txt ]]; then
+    notify-send "HyprFlux" "Optional apps need attention; see /var/log/hyprflux-installer/missing-applications.txt" 2>/dev/null || true
 fi
 
-if [ "$aur_pending" -eq 0 ]; then
+# Optional application recovery must not prevent session settings completing.
+# Do not grant permanent root privileges to make unattended AUR installs work.
+if [ "$session_pending" -eq 0 ]; then
     mkdir -p "$(dirname "$MARKER")"
     touch "$MARKER"
     rm -f "$HOME/.config/autostart/hyprflux-first-boot.desktop"
     notify-send "HyprFlux" "First-boot setup complete!" 2>/dev/null || true
 else
-    notify-send "HyprFlux" "Some packages remain missing; see $AUR_LOG" 2>/dev/null || true
+    notify-send "HyprFlux" "Session setup will retry next login; see ~/.local/state/hyprflux/first-boot.log" 2>/dev/null || true
 fi
 FIRSTBOOT_EOF
 
 chmod +x "${TARGET_HOME}/.local/bin/hyprflux-first-boot.sh"
+install_waybar_session_service "$TARGET_HOME"
+
+# Hyprland does not process XDG autostart entries by itself. Launch explicitly;
+# the script's flock and completion marker make duplicate launches harmless.
+if [[ -f "${TARGET_HOME}/.config/hypr/hyprland.lua" ]]; then
+    cat >> "${TARGET_HOME}/.config/hypr/hyprland.lua" <<'LUA_EOF'
+
+-- HyprFlux ISO: deferred desktop-session settings
+hl.on("hyprland.start", function()
+    hl.exec_cmd(os.getenv("HOME") .. "/.local/bin/hyprflux-start-waybar.sh")
+end)
+LUA_EOF
+    printf '\nhl.config({ input = { kb_layout = "%s", kb_variant = "%s" } })\n' \
+        "$XKB_LAYOUT" "$XKB_VARIANT" >> "${TARGET_HOME}/.config/hypr/hyprland.lua"
+fi
 
 # Fix ownership
 chown -R "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.config" 2>/dev/null || true
@@ -578,8 +806,7 @@ echo "    First-boot fixup created."
 echo ""
 echo "==> Cleanup"
 
-# Remove temporary sudoers entry (the narrow pacman rule stays for the
-# desktop session's AUR helper — intentional)
+# Revoke installation-only privileges; no passwordless pacman rule remains.
 rm -f /etc/sudoers.d/hyprflux-temp
 
 # Remove shim scripts
@@ -600,6 +827,47 @@ fi
 # preserved via the iso-wrapper.log tee from the installer.
 
 echo "    Cleanup complete."
+
+# Enforce postconditions, not the exit status of permissive upstream scripts.
+critical_failed=0
+pacman -Dk || critical_failed=1
+pacman -Qk hyprland sddm pipewire wireplumber networkmanager waybar-git wlogout \
+    firefox chromium thunar gsettings-desktop-schemas dconf || critical_failed=1
+for command in Hyprland kitty rofi waybar wlogout firefox chromium thunar pipewire wireplumber; do
+    if ! command -v "$command" >/dev/null; then
+        echo "[ERROR] Required desktop command missing: $command"
+        critical_failed=1
+    fi
+done
+for config in hypr/hyprland.lua waybar/config waybar/style.css; do
+    if [[ ! -s "${TARGET_HOME}/.config/$config" ]]; then
+        echo "[ERROR] Required config missing: $config"
+        critical_failed=1
+    fi
+done
+/usr/bin/systemctl enable sddm NetworkManager || critical_failed=1
+/usr/bin/systemctl set-default graphical.target || critical_failed=1
+[[ -L /etc/systemd/system/display-manager.service ]] || critical_failed=1
+visudo -c || critical_failed=1
+# Hyprland 0.57 requires XDG_RUNTIME_DIR even for config-only checks. Keep the
+# private path short enough for its Unix sockets, then remove it on exit.
+if ! timeout 60 su - "$TARGET_USER" -s /bin/bash -c \
+    'set -euo pipefail
+     runtime=$(mktemp -d /tmp/hv.XXXXXX)
+     trap '\''rm -rf "$runtime"'\'' EXIT
+     XDG_RUNTIME_DIR="$runtime" Hyprland --config "$HOME/.config/hypr/hyprland.lua" --verify-config'; then
+    echo '[ERROR] Installed Hyprland rejects the deployed configuration.'
+    critical_failed=1
+fi
+mkdir -p /var/log/hyprflux-installer
+printf '%s\n' "${FAILED_COMPONENTS[@]}" > /var/log/hyprflux-installer/failed-components.txt
+if (( critical_failed )); then
+    echo '[ERROR] Desktop validation failed. Installation is NOT complete.'
+    exit 1
+fi
+if (( ${#FAILED_COMPONENTS[@]} )); then
+    printf '[WARN] Components needing attention: %s\n' "${FAILED_COMPONENTS[*]}"
+fi
 
 echo ""
 echo "============================================"

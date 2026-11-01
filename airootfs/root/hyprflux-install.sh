@@ -30,12 +30,16 @@ source "${SCRIPT_DIR}/lib/common.sh"
 INSTALL_TIMEZONE=""
 INSTALL_LOCALE="en_US.UTF-8"
 INSTALL_KEYMAP="us"
+INSTALL_XKB_LAYOUT="us"
+INSTALL_XKB_VARIANT=""
 INSTALL_HOSTNAME="hyprflux"
 INSTALL_USERNAME=""
 INSTALL_PASSWORD=""
 INSTALL_DISK=""
 INSTALL_BOOT_MODE=""
 INSTALL_HAS_NVIDIA="no"
+INSTALL_NVIDIA_DRIVER="nouveau"
+INSTALL_PROFILE="desktop"
 HYPRFLUX_REF="f421b6bd108214079b56c435331ddbbfdfb89591"
 USE_SWAP=false
 SWAP_SIZE=0
@@ -49,6 +53,10 @@ ROOT_PART=""
 # ============================================================================
 # Initialize TUI
 # ============================================================================
+initialize_installer() {
+[[ $EUID -eq 0 ]] || { printf 'Run the installer as root.\n' >&2; exit 1; }
+exec 8>/run/hyprflux-installer.lock
+flock -n 8 || { printf 'Installer already running on another console.\n' >&2; exit 1; }
 check_terminal_size
 
 # Runtime dependency check: the TUI framework is built on gum + fzf, which
@@ -63,6 +71,7 @@ done
 unset _req
 
 show_banner
+check_platform || die "Unsupported firmware or CPU configuration."
 
 # ============================================================================
 # Error Trap
@@ -88,7 +97,6 @@ fi
 if findmnt -R "$MOUNT_POINT" &>/dev/null; then
     die "Target still has active mounts after cleanup; refusing to partition disks."
 fi
-swapoff -a 2>/dev/null || true
 
 tui_wait "Detecting hardware..." 2
 INSTALL_BOOT_MODE=$(detect_boot_mode)
@@ -96,40 +104,33 @@ INSTALL_HAS_NVIDIA=$(detect_nvidia)
 log_info "Boot mode: ${INSTALL_BOOT_MODE^^}"
 log_info "NVIDIA GPU: ${INSTALL_HAS_NVIDIA}"
 tui_wait "Ready" 1
+}
 
 # ============================================================================
 # Step 0: Network Check
 # ============================================================================
-# Simple connectivity gate: ping 1.1.1.1. If it responds, proceed. No
-# network configuration UI — the live ISO uses NetworkManager for Ethernet
-# (DHCP) out of the box; WiFi users should connect via nmtui beforehand.
+# NetworkManager handles Ethernet and WiFi; do not offer offline installation.
 # ============================================================================
 check_network() {
     show_banner
     set_status "Checking network connection..."
 
-    if tui_spinner "Checking internet connection (ping 1.1.1.1)..." check_internet; then
-        log_ok "Internet connection OK."
-        return 0
-    fi
-
-    # NetworkManager may still be bringing up the link — retry briefly.
-    local attempt
-    for attempt in 1 2 3 4 5; do
-        log_warn "No response from 1.1.1.1 (attempt ${attempt}/5). Retrying..."
-        sleep 3
-        if check_internet; then
+    systemctl start NetworkManager
+    timedatectl set-ntp true || true
+    while true; do
+        if tui_spinner "Checking HTTPS and DNS..." check_internet; then
             log_ok "Internet connection OK."
             return 0
         fi
+        local action
+        action=$(tui_menu "Internet unavailable. Check WiFi, DNS, and system date:" \
+            "Configure network (nmtui)" "Retry" "Open shell" "Cancel installation") || exit 0
+        case "$action" in
+            "Configure"*) nmtui || true ;;
+            "Open"*) bash || true ;;
+            "Cancel"*) exit 0 ;;
+        esac
     done
-
-    show_banner
-    tui_error "No internet connection (ping 1.1.1.1 failed)."
-    tui_print "HyprFlux requires an internet connection to install."
-    tui_print ""
-    tui_print "If you are on WiFi, connect first with: nmtui"
-    exit 1
 }
 
 # ============================================================================
@@ -146,7 +147,9 @@ step_welcome() {
     tui_print "Requirements:"
     tui_print "  - Internet connection (repos are cloned during install)"
     tui_print "  - A disk to install to (will be formatted)"
-    tui_print "  - At least 20GB free disk space"
+    tui_print "  - x86_64 CPU, 4GB RAM minimum (8GB recommended)"
+    tui_print "  - At least 26 GiB disk space, plus any swap"
+    tui_print "  - Secure Boot disabled; 64-bit UEFI or legacy BIOS"
     tui_print ""
 
     tui_yesno "Continue with installation?" || {
@@ -167,7 +170,7 @@ step_timezone() {
     local detected=""
     detected=$(curl -s --max-time 5 https://ipapi.co/timezone 2>/dev/null || true)
 
-    if [[ -n "$detected" ]] && [[ -f "/usr/share/zoneinfo/$detected" ]]; then
+    if [[ "$detected" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] && [[ -f "/usr/share/zoneinfo/$detected" ]]; then
         tui_print "Detected timezone: ${detected}"
         tui_print ""
         if tui_yesno "Use ${detected}?"; then
@@ -181,9 +184,7 @@ step_timezone() {
 
     # Build timezone list
     local timezones=()
-    while IFS= read -r zone; do
-        [[ -f "/usr/share/zoneinfo/$zone" ]] && timezones+=("$zone")
-    done < <(find /usr/share/zoneinfo -type f -not -path "*posix*" -not -path "*right*" | sed 's|/usr/share/zoneinfo/||' | sort)
+    mapfile -t timezones < <(timedatectl list-timezones)
 
     local selection
     selection=$(printf '%s\n' "${timezones[@]}" | tui_search "Timezone") || {
@@ -225,7 +226,7 @@ step_locale() {
     #   en_US.UTF-8 UTF-8   →  en_US.UTF-8
     #   ur_PK UTF-8         →  ur_PK
     local locale_list
-    locale_list=$(awk '/UTF-8/ && /^[a-z]/ { print $1 }' "$gen" | sort -u)
+    locale_list=$(list_utf8_locales "$gen")
 
     INSTALL_LOCALE=$(printf '%s\n' "$locale_list" | tui_search "Locale") || {
         INSTALL_LOCALE="en_US.UTF-8"
@@ -256,6 +257,20 @@ step_keyboard() {
 
     INSTALL_KEYMAP="$keymap"
     loadkeys "$INSTALL_KEYMAP" 2>/dev/null || true
+    # Linux console keymaps and XKB layouts are different namespaces.
+    INSTALL_XKB_VARIANT=""
+    case "$keymap" in
+        uk) INSTALL_XKB_LAYOUT=gb ;;
+        br-abnt2) INSTALL_XKB_LAYOUT=br ;;
+        pt-latin1) INSTALL_XKB_LAYOUT=pt ;;
+        jp106) INSTALL_XKB_LAYOUT=jp ;;
+        dvorak|colemak) INSTALL_XKB_LAYOUT=us; INSTALL_XKB_VARIANT="$keymap" ;;
+        us|de|fr|es|it|ru|kr|pl|se|nl) INSTALL_XKB_LAYOUT="$keymap" ;;
+        *)
+            INSTALL_XKB_LAYOUT=$(localectl list-x11-keymap-layouts | tui_search "Desktop XKB layout") \
+                || INSTALL_XKB_LAYOUT=us
+            ;;
+    esac
 }
 
 # ============================================================================
@@ -329,31 +344,77 @@ step_user() {
 # ============================================================================
 # Step 7: Disk Setup
 # ============================================================================
+step_graphics() {
+    [[ "$INSTALL_HAS_NVIDIA" == yes ]] || return 0
+    show_banner
+    set_status "NVIDIA driver selection"
+    lspci -nn | grep -Ei 'VGA|3D|Display' || true
+    tui_print "Current NVIDIA open drivers support Turing / GTX 16 / RTX and newer."
+    tui_print "GTX 10 and older need legacy drivers, not the current NVIDIA package."
+    tui_print "Nouveau/Mesa is available, but performance and Hyprland support vary."
+    local choice
+    choice=$(tui_menu "Choose the driver appropriate for your GPU:" \
+        "NVIDIA open (Turing / GTX 16 / RTX or newer only)" \
+        "Nouveau / Mesa (legacy GPU or recovery)" \
+        "Cancel installation") || exit 0
+    case "$choice" in
+        "NVIDIA open"*) INSTALL_NVIDIA_DRIVER=open ;;
+        "Nouveau"*) INSTALL_NVIDIA_DRIVER=nouveau ;;
+        *) exit 0 ;;
+    esac
+}
+
+step_profile() {
+    show_banner
+    set_status "Application profile"
+    tui_print "Both profiles include the configured HyprFlux desktop, browsers,"
+    tui_print "file manager, audio, networking, screenshots and desktop tools."
+    tui_print "Full additionally installs the extended editor/chat/AI/media bundle."
+    tui_print "Its extra downloads and AUR builds can take considerably longer."
+    local choice
+    choice=$(tui_menu "Choose an application profile:" \
+        "Desktop (recommended; smaller and faster)" \
+        "Full application bundle") || exit 0
+    case "$choice" in
+        "Desktop"*) INSTALL_PROFILE=desktop ;;
+        "Full"*) INSTALL_PROFILE=full ;;
+        *) exit 0 ;;
+    esac
+}
+
+step_review() {
+    show_banner
+    set_status "Review installation settings"
+    tui_print "Hostname: $INSTALL_HOSTNAME"
+    tui_print "User: $INSTALL_USERNAME"
+    tui_print "Timezone: $INSTALL_TIMEZONE"
+    tui_print "Regional locale: $INSTALL_LOCALE (system language: English)"
+    tui_print "Keyboard: console $INSTALL_KEYMAP / desktop $INSTALL_XKB_LAYOUT $INSTALL_XKB_VARIANT"
+    tui_print "Boot mode: $INSTALL_BOOT_MODE"
+    tui_print "Application profile: $INSTALL_PROFILE"
+    [[ "$INSTALL_HAS_NVIDIA" == yes ]] && tui_print "NVIDIA driver: $INSTALL_NVIDIA_DRIVER"
+    tui_yesno "Continue to disk setup? No disk has been erased yet." || exit 0
+}
+
 step_disk_auto() {
     show_banner
     set_status "Disk Setup (Automatic)"
 
     # Never offer the device the live ISO is running from — wiping it would
     # kill the installer mid-flight. Derived from the archiso boot mount.
-    local live_disk=""
-    if findmnt -n -o SOURCE /run/archiso/bootmnt &>/dev/null; then
-        live_disk=$(findmnt -n -o SOURCE /run/archiso/bootmnt | sed -E 's/[0-9]+$//; s/p$//')
-    fi
-    [[ -n "$live_disk" ]] && log_warn "Excluding live-ISO device ${live_disk} from disk list."
-
     local disk_list=()
     while IFS= read -r line; do
         local dev size model
         dev=$(printf '%s' "$line" | awk '{print $1}')
         size=$(printf '%s' "$line" | awk '{print $2}')
-        model=$(printf '%s' "$line" | awk '{$1=$2=""; print $0}' | xargs)
+        model=$(printf '%s' "$line" | awk '{$1=$2=""; sub(/^[[:space:]]+/, ""); print}')
         [[ -z "$dev" ]] && continue
-        [[ -n "$live_disk" && "$dev" == "$live_disk" ]] && continue
+        disk_is_installable "$dev" || continue
         disk_list+=("$dev ($size) ${model:-Unknown}")
     done < <(lsblk -d -p -n -o NAME,SIZE,MODEL 2>/dev/null | grep -v -E 'loop|sr|rom|boot')
 
     if [[ ${#disk_list[@]} -eq 0 ]]; then
-        die "No disks found!"
+        die "No unused writable disks found. Inspect lsblk and swapon --show; mounted/live-media disks are excluded."
     fi
 
     # Warn (not abort) when the chosen disk looks too small for HyprFlux.
@@ -377,7 +438,7 @@ step_disk_auto() {
     printf '%s%sWARNING: The selected disk will be completely erased!%s\n\n' "$PAD" "${RED}" "${RESET}"
 
     local selection
-    selection=$(tui_menu "Select disk:" "${disk_list[@]}") || return 1
+    selection=$(tui_menu "Select disk:" "${disk_list[@]}") || { step_disk; return; }
 
     INSTALL_DISK=$(printf '%s' "$selection" | awk '{print $1}')
 
@@ -388,7 +449,8 @@ step_disk_auto() {
     local confirm
     confirm=$(tui_input "Type 'yes' to confirm" "")
     if [[ "$confirm" != "yes" ]]; then
-        return 1
+        step_disk
+        return
     fi
 
     # Swap
@@ -404,7 +466,7 @@ step_disk_auto() {
         while true; do
             SWAP_SIZE=$(tui_input "Swap size (GB)" "4")
             [[ -z "$SWAP_SIZE" ]] && SWAP_SIZE="4"
-            if [[ "$SWAP_SIZE" =~ ^[0-9]+$ ]] && (( SWAP_SIZE > 0 )); then
+            if [[ "$SWAP_SIZE" =~ ^[1-9][0-9]{0,3}$ ]]; then
                 break
             fi
             tui_error "Invalid swap size '${SWAP_SIZE}' — enter a positive number (e.g. 4, 8, 16)."
@@ -415,13 +477,21 @@ step_disk_auto() {
     local part_prefix
     part_prefix=$(get_part_prefix "$INSTALL_DISK")
 
+    disk_is_installable "$INSTALL_DISK" || die "Disk is mounted, read-only, or contains live media: $INSTALL_DISK"
+    local disk_bytes swap_gib=0
+    disk_bytes=$(blockdev --getsize64 "$INSTALL_DISK")
+    [[ "$USE_SWAP" == true ]] && swap_gib=$((10#$SWAP_SIZE))
+    (( disk_bytes >= (25 + swap_gib + 1) * 1024 * 1024 * 1024 )) \
+        || die "Disk needs at least 26 GiB plus the requested swap space."
+
     start_progress "Partitioning ${INSTALL_DISK}..."
 
     set +e
     (
+        set -e
         printf '==> Wiping disk %s\n' "$INSTALL_DISK"
-        sgdisk -Z "$INSTALL_DISK" 2>&1 || true
-        wipefs -a "$INSTALL_DISK" 2>&1 || true
+        sgdisk -Z "$INSTALL_DISK" 2>&1
+        wipefs -a "$INSTALL_DISK" 2>&1
 
         if [[ "$INSTALL_BOOT_MODE" == "uefi" ]]; then
             printf '==> Creating GPT partition table (UEFI)\n'
@@ -508,6 +578,7 @@ step_disk_auto() {
 
     set +e
     (
+        set -e
         if [[ "$INSTALL_BOOT_MODE" == "uefi" ]]; then
             printf '==> Formatting EFI partition: %s\n' "$EFI_PART"
             mkfs.vfat -F 32 "$EFI_PART" 2>&1
@@ -535,9 +606,10 @@ step_disk_auto() {
 
     set +e
     (
+        set -e
         printf '==> Mounting root at %s\n' "$MOUNT_POINT"
         mkdir -p "$MOUNT_POINT"
-        mount "$ROOT_PART" "$MOUNT_POINT"
+        mount -t ext4 "$ROOT_PART" "$MOUNT_POINT"
 
         if [[ "$INSTALL_BOOT_MODE" == "uefi" ]]; then
             printf '==> Mounting EFI at %s/boot\n' "$MOUNT_POINT"
@@ -615,8 +687,22 @@ step_disk_manual() {
         fi
     fi
 
-    INSTALL_DISK=$(findmnt -n -o SOURCE "$MOUNT_POINT" | sed 's/[0-9]*$//' | sed 's/p$//')
-    ROOT_PART=$(findmnt -n -o SOURCE "$MOUNT_POINT")
+    local available_bytes
+    available_bytes=$(df -B1 --output=avail "$MOUNT_POINT" | tail -1)
+    (( available_bytes >= 25 * 1024 * 1024 * 1024 )) || die "Root needs at least 25 GiB available."
+
+    ROOT_PART=$(findmnt -n -o SOURCE --mountpoint "$MOUNT_POINT")
+    [[ "$(findmnt -nro FSTYPE --mountpoint "$MOUNT_POINT")" == ext4 ]] \
+        || die "Manual installation currently supports ext4 root only; encryption/RAID require extra boot configuration."
+    INSTALL_DISK=$(parent_disk "$ROOT_PART") || die "Cannot identify a single physical target disk."
+    if [[ "$INSTALL_BOOT_MODE" == uefi ]]; then
+        EFI_PART=$(findmnt -nro SOURCE --mountpoint "${MOUNT_POINT}/boot")
+        [[ "$(findmnt -nro FSTYPE --mountpoint "${MOUNT_POINT}/boot")" == vfat ]] \
+            || die "The EFI partition must use FAT32 (vfat)."
+    elif [[ "$(lsblk -dnro PTTYPE "$INSTALL_DISK")" == gpt ]]; then
+        lsblk -nr -o PARTTYPE "$INSTALL_DISK" | grep -qi '21686148-6449-6e6f-744e-656564454649' \
+            || die "GPT BIOS installation requires a BIOS boot partition (ef02)."
+    fi
 
     log_ok "Partitions verified."
 }
@@ -628,11 +714,11 @@ step_disk() {
     local mode
     mode=$(tui_menu "Disk Partitioning:" \
         "Automatic (wipe entire disk)" \
-        "Manual (partition yourself)") || mode="Automatic (wipe entire disk)"
+        "Manual (partition yourself)") || { log_warn "Installation cancelled."; exit 0; }
 
     case "$mode" in
         "Automatic"*)
-            step_disk_auto || step_disk
+            step_disk_auto
             ;;
         "Manual"*)
             step_disk_manual
@@ -650,6 +736,7 @@ step_base_install() {
 
     local base_pkgs=(
         base linux linux-firmware
+        mkinitcpio sof-firmware alsa-ucm-conf wireless-regdb
         grub efibootmgr
         networkmanager
         sudo vim nano git zsh
@@ -662,23 +749,22 @@ step_base_install() {
     # --- Phase 1: Optimize mirrors ---
     start_progress "Finding fastest mirrors..."
 
-    timeout 120 reflector --latest 10 --protocol https --sort rate --download-timeout 5 \
-        --save /etc/pacman.d/mirrorlist >> "$PROGRESS_LOG" 2>&1 || {
-        printf 'Reflector timed out or failed, using existing mirrors\n' >> "$PROGRESS_LOG"
-    }
+    refresh_mirrors >> "$PROGRESS_LOG" 2>&1
 
     # Guard: a zero-byte/empty mirrorlist would make every pacstrap retry
     # fail with a confusing error. Fall back to the ISO's default mirrors.
-    if [[ ! -s /etc/pacman.d/mirrorlist ]]; then
-        printf 'Reflector produced an empty mirrorlist — restoring default mirrors\n' >> "$PROGRESS_LOG"
-        cp /etc/pacman.d/mirrorlist.pacnew /etc/pacman.d/mirrorlist 2>/dev/null \
-            || cp /usr/share/pacman/mirrorlist /etc/pacman.d/mirrorlist 2>/dev/null || true
-    fi
-    cp /etc/pacman.d/mirrorlist "${MOUNT_POINT}/etc/pacman.d/mirrorlist" || true
+    cp /etc/pacman.d/mirrorlist "${MOUNT_POINT}/etc/pacman.d/mirrorlist"
 
     stop_progress
 
     # --- Phase 2: pacstrap with retries ---
+    systemctl start pacman-init.service || die "Live pacman keyring initialization failed."
+    start_progress "Refreshing Arch signing keys..."
+    if ! pacman -Sy --needed --noconfirm archlinux-keyring >> "$PROGRESS_LOG" 2>&1; then
+        stop_progress
+        die "Could not refresh Arch signing keys. Check connectivity and the system date."
+    fi
+    stop_progress
     local max_retries=3
     local retry_count=0
     local pacstrap_success=false
@@ -689,9 +775,8 @@ step_base_install() {
         if [[ $retry_count -gt 1 ]]; then
             # Refresh mirrors between retries
             start_progress "Refreshing mirrors (attempt ${retry_count}/${max_retries})..."
-            timeout 60 reflector --latest 5 --protocol https --sort rate --download-timeout 5 \
-                --save /etc/pacman.d/mirrorlist >> "$PROGRESS_LOG" 2>&1 || true
-            cp /etc/pacman.d/mirrorlist "${MOUNT_POINT}/etc/pacman.d/mirrorlist" || true
+            refresh_mirrors >> "$PROGRESS_LOG" 2>&1
+            cp /etc/pacman.d/mirrorlist "${MOUNT_POINT}/etc/pacman.d/mirrorlist"
             stop_progress
         fi
 
@@ -733,7 +818,7 @@ step_base_install() {
     show_banner
     set_status "Generating fstab..."
     rm -f "${MOUNT_POINT}/etc/fstab"
-    genfstab -U "$MOUNT_POINT" > "${MOUNT_POINT}/etc/fstab" 2>/dev/null || true
+    genfstab -U "$MOUNT_POINT" > "${MOUNT_POINT}/etc/fstab" || die "Could not generate fstab."
     if [[ ! -s "${MOUNT_POINT}/etc/fstab" ]]; then
         die "fstab generation produced an empty file — cannot continue."
     fi
@@ -749,6 +834,7 @@ step_configure_system() {
 
     set +e
     (
+        set -e
         # Timezone
         printf '==> Configuring timezone: %s\n' "${INSTALL_TIMEZONE}"
         arch-chroot "$MOUNT_POINT" ln -sf "/usr/share/zoneinfo/${INSTALL_TIMEZONE}" /etc/localtime
@@ -905,14 +991,10 @@ LSB_RELEASE_EOF
         # ("Failed to start Cleaning Up and Shutting Down Daemons" +
         # emergency mode). Explicitly include the common disk stacks.
         printf '==> Ensuring disk modules in mkinitcpio\n'
-        arch-chroot "$MOUNT_POINT" sed -i \
-            's/^MODULES=.*/MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci)/' \
-            /etc/mkinitcpio.conf 2>/dev/null || \
-            printf 'MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci)\n' \
-                >> "${MOUNT_POINT}/etc/mkinitcpio.conf"
+        cp "${SCRIPT_DIR}/lib/configure-initramfs.sh" "${MOUNT_POINT}/root/configure-initramfs.sh"
         # Rebuild NOW with the explicit modules (module 09 rebuilds later too —
         # this guarantees the bootable initramfs exists even if Phase B skips it).
-        arch-chroot "$MOUNT_POINT" mkinitcpio -P 2>/dev/null || true
+        arch-chroot "$MOUNT_POINT" bash /root/configure-initramfs.sh
 
         # User creation
         printf '==> Creating user: %s\n' "${INSTALL_USERNAME}"
@@ -940,8 +1022,11 @@ LSB_RELEASE_EOF
         printf '==> Installing GRUB bootloader\n'
         local grub_ok=false
         if [[ "${INSTALL_BOOT_MODE}" == "uefi" ]]; then
-            if arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB 2>&1; then
+            # Install the vendor loader independently of firmware variable writes.
+            if arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB --no-nvram 2>&1; then
                 grub_ok=true
+                arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB 2>&1 \
+                    || printf 'WARNING: NVRAM registration unavailable; using fallback loader.\n'
             else
                 printf 'WARNING: first grub-install attempt failed — retrying...\n'
                 if arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB 2>&1; then
@@ -957,7 +1042,7 @@ LSB_RELEASE_EOF
             # motherboard reset, or moving the disk to another machine).
             if [[ "$grub_ok" == true ]]; then
                 if arch-chroot "$MOUNT_POINT" grub-install --target=x86_64-efi \
-                    --efi-directory=/boot --bootloader-id=GRUB --removable 2>&1; then
+                    --efi-directory=/boot --bootloader-id=GRUB --removable --no-nvram 2>&1; then
                     printf 'NOTE: installed UEFI fallback loader at EFI/BOOT/BOOTX64.EFI.\n'
                 else
                     printf 'ERROR: GRUB NVRAM install succeeded but fallback loader installation failed.\n'
@@ -985,8 +1070,7 @@ LSB_RELEASE_EOF
             exit 1
         fi
 
-        arch-chroot "$MOUNT_POINT" grub-mkconfig -o /boot/grub/grub.cfg 2>&1
-        if [[ $? -ne 0 ]]; then
+        if ! arch-chroot "$MOUNT_POINT" grub-mkconfig -o /boot/grub/grub.cfg 2>&1; then
             printf 'ERROR: grub-mkconfig failed — target would not boot.\n'
             exit 1
         fi
@@ -1037,11 +1121,20 @@ step_install_hyprflux() {
 
     set +e
     (
-        [[ -d "${user_home}/HyprFlux" ]] && rm -rf "${user_home}/HyprFlux"
+        set -e
+        local _clone_ok=false
+        if checkout_matches_release "${user_home}/HyprFlux" "$HYPRFLUX_REF"; then
+            _clone_ok=true
+            printf '==> Reusing clean pinned HyprFlux checkout %s\n' "$HYPRFLUX_REF"
+        elif [[ -e "${user_home}/HyprFlux" ]]; then
+            local previous_repo
+            previous_repo=$(mktemp -d "${user_home}/HyprFlux.backup.XXXXXX")
+            mv "${user_home}/HyprFlux" "$previous_repo/HyprFlux" || exit 1
+            printf '==> Preserved existing checkout at %s/HyprFlux\n' "$previous_repo"
+        fi
 
         local _clone_attempt=0
-        local _clone_ok=false
-        while (( _clone_attempt < 3 )); do
+        while [[ "$_clone_ok" != true ]] && (( _clone_attempt < 3 )); do
             _clone_attempt=$((_clone_attempt + 1))
             printf '==> Fetching pinned HyprFlux revision %s (attempt %d/3)...\n' "$HYPRFLUX_REF" "$_clone_attempt"
             mkdir -p "${user_home}/HyprFlux"
@@ -1075,7 +1168,8 @@ step_install_hyprflux() {
     printf 'HYPRFLUX_REF=%s\n' "$HYPRFLUX_REF" > "${MOUNT_POINT}/etc/hyprflux-install-release"
 
     show_banner
-    tui_spinner "Setting file permissions..." arch-chroot "$MOUNT_POINT" chown -R         "${INSTALL_USERNAME}:${INSTALL_USERNAME}"         "/home/${INSTALL_USERNAME}" || true
+    tui_spinner "Setting file permissions..." arch-chroot "$MOUNT_POINT" chown -R \
+        "${INSTALL_USERNAME}:${INSTALL_USERNAME}" "/home/${INSTALL_USERNAME}"
 
     # Copy the chroot wrapper into the target and run it. It orchestrates:
     #   Phase A: base-installer install scripts (packages, yay, AUR, zsh...)
@@ -1100,10 +1194,17 @@ step_install_hyprflux() {
 
     start_progress "Installing HyprFlux..."
 
+    if [[ -s "$wrapper_log" ]]; then
+        local previous_log
+        previous_log=$(mktemp "${wrapper_log}.previous.XXXXXX")
+        cp -p "$wrapper_log" "$previous_log"
+    fi
+
     set +e
     (
         arch-chroot "$MOUNT_POINT" /bin/bash /root/hyprflux-chroot-wrapper.sh \
-            "${INSTALL_USERNAME}" "${INSTALL_HAS_NVIDIA}"
+            "${INSTALL_USERNAME}" "${INSTALL_HAS_NVIDIA}" "${INSTALL_NVIDIA_DRIVER}" \
+            "${INSTALL_XKB_LAYOUT}" "${INSTALL_XKB_VARIANT}" "${INSTALL_PROFILE}"
     ) 2>&1 | tee "${wrapper_log}" >> "$PROGRESS_LOG" 2>&1
     local wrapper_status=${PIPESTATUS[0]}
     set -e
@@ -1111,7 +1212,8 @@ step_install_hyprflux() {
     stop_progress
 
     rm -f "${MOUNT_POINT}/root/hyprflux-chroot-wrapper.sh"
-    chown "${INSTALL_USERNAME}:${INSTALL_USERNAME}" "${wrapper_log}" 2>/dev/null || true
+    arch-chroot "$MOUNT_POINT" chown "${INSTALL_USERNAME}:${INSTALL_USERNAME}" \
+        "/home/${INSTALL_USERNAME}/HyprFlux/logs/iso-wrapper.log"
 
     if [[ $wrapper_status -ne 0 ]]; then
         show_banner
@@ -1124,11 +1226,12 @@ step_install_hyprflux() {
     # regardless of intermediate package/module rebuilds.
     show_banner
     set_status "Enforcing bootable initramfs..."
-    arch-chroot "$MOUNT_POINT" bash -c "
-        grep -q '^MODULES=(.*virtio_blk' /etc/mkinitcpio.conf || \
-          sed -i 's/^MODULES=.*/MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci)/' /etc/mkinitcpio.conf
-        mkinitcpio -P
-    " 2>&1 | tail -2
+    arch-chroot "$MOUNT_POINT" bash /root/configure-initramfs.sh
+    rm -f "${MOUNT_POINT}/root/configure-initramfs.sh"
+    # Upstream theming/NVIDIA modules can change kernel arguments. Generate the
+    # authoritative GRUB configuration only after the final initramfs exists.
+    arch-chroot "$MOUNT_POINT" grub-mkconfig -o /boot/grub/grub.cfg
+    arch-chroot "$MOUNT_POINT" grub-script-check /boot/grub/grub.cfg
 
     _initrd_listing=$(lsinitcpio "${MOUNT_POINT}/boot/initramfs-linux.img" 2>/dev/null) \
         || die "Could not inspect the rebuilt initramfs."
@@ -1148,9 +1251,10 @@ step_install_hyprflux() {
     fi
     _initrd_systemctl=$(find "$_initrd_verify_dir" -path '*/usr/bin/systemctl' -print -quit)
     if [[ -z "$_initrd_systemctl" ]] || \
-        ! file -L "$_initrd_systemctl" 2>/dev/null | grep -q 'ELF'; then
+        ! file -L "$_initrd_systemctl" 2>/dev/null | grep -q 'ELF' || \
+        ! cmp -s "$_initrd_systemctl" "${MOUNT_POINT}/usr/bin/systemctl"; then
         rm -rf "$_initrd_verify_dir"
-        die "Initramfs contains a missing or non-ELF systemctl; refusing to reboot."
+        die "Initramfs systemctl is missing, corrupt, or differs from the installed binary; refusing to reboot."
     fi
     rm -rf "$_initrd_verify_dir"
     unset _initrd_verify_dir _initrd_systemctl
@@ -1166,6 +1270,15 @@ step_install_hyprflux() {
     _boot_ok=true
 
     _root_uuid=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null)
+    [[ -n "$_root_uuid" ]] || die "Root filesystem UUID is missing."
+    awk -v source="UUID=$_root_uuid" '$1 == source && $2 == "/" {found=1} END {exit !found}' \
+        "${MOUNT_POINT}/etc/fstab" || die "fstab does not reference the installed root UUID."
+    if [[ "$INSTALL_BOOT_MODE" == uefi ]]; then
+        local esp_uuid
+        esp_uuid=$(blkid -s UUID -o value "$EFI_PART")
+        awk -v source="UUID=$esp_uuid" '$1 == source && $2 == "/boot" {found=1} END {exit !found}' \
+            "${MOUNT_POINT}/etc/fstab" || die "fstab does not reference the EFI partition UUID."
+    fi
     _grub_root=$(grep -m1 -oE 'root=UUID=[a-fA-F0-9-]+' \
         "${MOUNT_POINT}/boot/grub/grub.cfg" 2>/dev/null | cut -d= -f3 || true)
 
@@ -1220,6 +1333,15 @@ DEBUG_EOF
 # ============================================================================
 step_cleanup_reboot() {
     show_banner
+    mkdir -p "${MOUNT_POINT}/var/log/hyprflux-installer/live"
+    cp -a "${INSTALL_LOG_DIR:-/var/log/hyprflux-installer}/." \
+        "${MOUNT_POINT}/var/log/hyprflux-installer/live/"
+    chmod 700 "${MOUNT_POINT}/var/log/hyprflux-installer/live"
+    if [[ -s "${MOUNT_POINT}/var/log/hyprflux-installer/missing-applications.txt" ]]; then
+        tui_warning_box "Some optional applications failed; the desktop passed validation."
+        cat "${MOUNT_POINT}/var/log/hyprflux-installer/missing-applications.txt"
+        tui_print "After login, install missing apps with: yay -S --needed <package>"
+    fi
     sync
 
     tui_success_box "HyprFlux Installation Complete!"
@@ -1271,6 +1393,7 @@ step_cleanup_reboot() {
 # Main Installation Flow
 # ============================================================================
 main() {
+    initialize_installer
     check_network          # Step 0
     step_welcome           # Step 1
     step_timezone          # Step 2
@@ -1278,6 +1401,9 @@ main() {
     step_keyboard          # Step 4
     step_hostname          # Step 5
     step_user              # Step 6
+    step_graphics          # Hardware-specific driver choice before touching disk
+    step_profile           # Required desktop vs extended application bundle
+    step_review            # Confirm collected settings before destructive steps
     step_disk              # Step 7
     step_base_install      # Step 8
     step_configure_system  # Step 9
@@ -1285,4 +1411,6 @@ main() {
     step_cleanup_reboot    # Step 11
 }
 
-main
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

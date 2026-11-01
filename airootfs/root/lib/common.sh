@@ -39,9 +39,8 @@ die() {
         wait "$_PROGRESS_PID" 2>/dev/null || true
         _PROGRESS_PID=""
     fi
-    if [[ -n "${PROGRESS_LOG:-}" && -f "${PROGRESS_LOG:-}" ]]; then
-        rm -f "$PROGRESS_LOG" 2>/dev/null || true
-    fi
+    local failure_log="${INSTALL_LOG_DIR:-/var/log/hyprflux-installer}"
+    stop_progress 2>/dev/null || true
     PROGRESS_LOG=""
     _PROGRESS_STATUS=""
 
@@ -60,6 +59,7 @@ die() {
     printf '\n'
     log_error "Installation failed. Dropping to shell for debugging."
     log_error "To re-run: bash ~/hyprflux-install.sh"
+    log_error "Logs: ${failure_log} (copy these before rebooting the live ISO)"
     printf '\n'
 
     # Drop to a subshell (not exec) so EXIT traps can still fire
@@ -76,7 +76,7 @@ die() {
 # entry that the installer writes to /etc/hosts.
 validate_hostname() {
     local name="$1"
-    [[ "$name" =~ ^[a-zA-Z][a-zA-Z0-9-]{0,62}$ ]] && [[ "${name,,}" != "localhost" ]]
+    [[ "$name" =~ ^[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] && [[ "${name,,}" != "localhost" ]]
 }
 
 # Username: starts with lowercase letter, lowercase + digits + underscore/hyphen, max 32.
@@ -95,7 +95,30 @@ validate_username() {
 # password would silently truncate it and the login would never work.
 validate_password() {
     local pass="$1"
-    [[ -n "$pass" ]] && [[ "$pass" != *:* ]]
+    [[ -n "$pass" && "$pass" != *:* && "$pass" != *$'\n'* && "$pass" != *$'\r'* ]]
+}
+
+list_utf8_locales() {
+    awk '{sub(/^#[[:space:]]*/, "")} $2 == "UTF-8" && $1 ~ /^[a-z]+_[A-Z]+/ { print $1 }' "$1" | sort -u
+}
+
+# Reuse only an unmodified checkout of the exact release and expected origin.
+# Allow the installer's logs/ directory even when upstream does not ignore it;
+# changed, foreign or otherwise untracked checkouts must be preserved instead.
+checkout_matches_release() {
+    local repo="$1" revision="$2"
+    local -a command=(git -c "safe.directory=$repo" -c core.fsmonitor=false -C "$repo")
+    [[ -d "$repo/.git" ]] || return 1
+    [[ "$("${command[@]}" rev-parse HEAD 2>/dev/null)" == "$revision" ]] || return 1
+    [[ "$("${command[@]}" remote get-url origin 2>/dev/null)" == https://github.com/ahmad9059/HyprFlux.git ]] || return 1
+    "${command[@]}" diff --no-ext-diff --no-textconv --quiet || return 1
+    "${command[@]}" diff --cached --no-ext-diff --no-textconv --quiet || return 1
+    local untracked path
+    untracked=$("${command[@]}" ls-files --others --exclude-standard) || return 1
+    while IFS= read -r path; do
+        [[ -z "$path" || "$path" == logs/* ]] || return 1
+    done <<< "$untracked"
+    return 0
 }
 
 # ============================================================================
@@ -103,9 +126,10 @@ validate_password() {
 # ============================================================================
 
 # Check internet connectivity (returns 0 if online)
-# Simple ping to 1.1.1.1 — if it responds, we're online.
+# Check DNS, HTTPS and certificates, not ICMP (often blocked on usable networks).
 check_internet() {
-    ping -c 1 -W 3 1.1.1.1 &>/dev/null
+    curl --fail --silent --location --connect-timeout 5 --max-time 15 \
+        https://archlinux.org/ -o /dev/null
 }
 
 # Wait for internet with retries
@@ -129,11 +153,29 @@ wait_for_internet() {
 # ============================================================================
 
 detect_boot_mode() {
-    if [[ -d /sys/firmware/efi/efivars ]]; then
+    if [[ -d /sys/firmware/efi ]]; then
         echo "uefi"
     else
         echo "bios"
     fi
+}
+
+check_platform() {
+    [[ "$(uname -m)" == x86_64 ]] || { echo 'Only x86_64 CPUs are supported.' >&2; return 1; }
+    if [[ -r /sys/firmware/efi/fw_platform_size ]] && [[ $(</sys/firmware/efi/fw_platform_size) != 64 ]]; then
+        echo '32-bit UEFI is unsupported; use 64-bit UEFI or legacy BIOS.' >&2
+        return 1
+    fi
+    local variable enabled
+    for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
+        [[ -r "$variable" ]] || continue
+        enabled=$(od -An -t u1 -j 4 -N 1 "$variable") || return 1
+        if [[ "${enabled//[[:space:]]/}" == 1 ]]; then
+            echo 'Disable Secure Boot before installing the unsigned target bootloader.' >&2
+            return 1
+        fi
+    done
+    return 0
 }
 
 # ============================================================================
@@ -143,7 +185,7 @@ detect_boot_mode() {
 # NVIDIA detection -- MUST be called on the live ISO, NOT inside chroot.
 # The chroot has no PCI bus access.
 detect_nvidia() {
-    if lspci 2>/dev/null | grep -qi 'nvidia'; then
+    if lspci -nn 2>/dev/null | grep -Ei 'VGA|3D|Display' | grep -qi 'nvidia'; then
         echo "yes"
     else
         echo "no"
@@ -159,11 +201,38 @@ detect_nvidia() {
 #          /dev/sda     -> /dev/sda
 get_part_prefix() {
     local disk="$1"
-    if [[ "$disk" == *nvme* || "$disk" == *mmcblk* || "$disk" == *loop* ]]; then
+    if [[ "$disk" =~ [0-9]$ ]]; then
         echo "${disk}p"
     else
         echo "${disk}"
     fi
+}
+
+# Never infer disk parents by trimming digits: that corrupts nvme/mmc names
+# and cannot represent device-mapper stacks. Reject mounted, read-only and
+# live-media disks before destructive operations.
+disk_is_installable() {
+    local disk="$1" source ancestor mountpoint
+    [[ -b "$disk" ]] || return 1
+    [[ "$(lsblk -dnro TYPE "$disk")" == disk ]] || return 1
+    [[ "$(lsblk -dnro RO "$disk")" == 0 ]] || return 1
+    while IFS= read -r mountpoint; do
+        [[ -z "$mountpoint" ]] || return 1
+    done < <(lsblk -nr -o MOUNTPOINTS "$disk")
+    for mountpoint in /run/archiso/bootmnt /run/archiso/img_dev; do
+        source=$(findmnt -nro SOURCE --mountpoint "$mountpoint" 2>/dev/null) || continue
+        while IFS= read -r ancestor; do
+            [[ "$ancestor" != "$disk" ]] || return 1
+        done < <(lsblk -snrpo NAME "$source" 2>/dev/null)
+    done
+    return 0
+}
+
+parent_disk() {
+    local source="${1%%\[*}" disks
+    disks=$(lsblk -snrpo NAME,TYPE "$source" | awk '$2 == "disk" {print $1}') || return 1
+    [[ -n "$disks" && "$disks" != *$'\n'* ]] || return 1
+    printf '%s\n' "$disks"
 }
 
 # List available disks (excluding loop, sr, ram devices)
@@ -189,4 +258,22 @@ setup_mirrors() {
             log_cmd "$line"
         done || log_warn "Reflector failed or timed out"
     log_ok "Mirror list updated"
+}
+
+# Reflector must not truncate the last working mirror list on a timeout.
+refresh_mirrors() {
+    local destination="${1:-/etc/pacman.d/mirrorlist}" candidate
+    candidate=$(mktemp "${destination}.XXXXXX") || return 1
+    if timeout 45 reflector --latest 20 --protocol https --sort rate \
+        --download-timeout 3 --save "$candidate" \
+        && grep -Eq '^[[:space:]]*Server[[:space:]]*=' "$candidate"; then
+        chmod 644 "$candidate"
+        mv -f "$candidate" "$destination"
+    else
+        rm -f "$candidate"
+        printf 'Mirror ranking unavailable; keeping existing mirrors.\n'
+    fi
+    if ! grep -Eq '^[[:space:]]*Server[[:space:]]*=' "$destination"; then
+        printf 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n' > "$destination"
+    fi
 }
