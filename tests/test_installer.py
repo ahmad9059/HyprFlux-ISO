@@ -574,6 +574,10 @@ class InstallerTests(unittest.TestCase):
             home = Path(temp)
             mock = home / "mock"
             mock.mkdir()
+            papirus = home / 'papirus-checkmark.svg'
+            papirus.write_text('<svg><style>.ColorScheme-PositiveText { color:#4caf50; }</style>'
+                               '<path class="ColorScheme-Text" /></svg>')
+            script = script.replace('/usr/share/icons/Papirus/24x24/actions/dialog-ok-apply.svg', str(papirus))
             for command in ("gsettings", "systemctl", "nwg-look", "notify-send", "sleep"):
                 path = mock / command
                 if command == "systemctl":
@@ -582,6 +586,8 @@ class InstallerTests(unittest.TestCase):
                     # -a restores a nonexistent backup on a fresh install.
                     # -x exports the settings applied by gsettings instead.
                     path.write_text('#!/bin/bash\n[[ "$1" == -x ]] || exit 1\ntouch "$HOME/exported-gtk-settings"\n')
+                elif command == "notify-send":
+                    path.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$HOME/notification-args"\n')
                 else:
                     path.write_text('#!/bin/bash\nexit 0\n')
                 path.chmod(0o755)
@@ -593,11 +599,17 @@ class InstallerTests(unittest.TestCase):
             subprocess.run(["bash", "-c", script], env=env, check=True, timeout=10)
             self.assertFalse(marker.exists())
             self.assertTrue(entry.exists())
+            self.assertNotIn('--icon=', (home / 'notification-args').read_text())
             env["FAIL_SESSION"] = "0"
             subprocess.run(["bash", "-c", script], env=env, check=True, timeout=10)
             self.assertTrue(marker.exists())
             self.assertTrue((home / "exported-gtk-settings").is_file())
             self.assertFalse(entry.exists())
+            icon = home / '.local/share/icons/hyprflux-first-boot-success.svg'
+            self.assertIn('class="ColorScheme-PositiveText"', icon.read_text())
+            self.assertIn('class="ColorScheme-Text"', papirus.read_text())
+            self.assertIn(f'--icon={icon}', (home / 'notification-args').read_text())
+            self.assertIn('First-boot setup complete!', (home / 'notification-args').read_text())
 
     def test_wrapper_cleanup_runs_on_failure(self):
         wrapper = (ROOT / "airootfs/root/lib/hyprflux-chroot-wrapper.sh").read_text()

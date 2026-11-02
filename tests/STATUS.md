@@ -2,7 +2,98 @@
 
 This is a progress checkpoint, **not production certification**.
 
+## Icon-enabled ISO: Full install and desktop boot passed
+
+Follow-up workflow `sh_19d154dd5001x8ZdJwVJ9uUUN7` completed successfully on
+`out/build-20261102T153842Z-1/hyprflux-2026.11.02-x86_64.iso`, SHA256
+`e969e0ae6c70c02157561c0ab9be43e1ba555037a08dac0f01ea8977d06a584c`.
+State `.qemu-tests/uefi-bh42p__v/`: clean embedded Full UEFI/NVMe install and first
+desktop boot both **PASS**. Screenshot inspected: green Papirus checkmark is
+visible beside "First-boot setup complete!", Waybar is rendered, and no config
+warning is apparent. No hot-loaded repair or external package cache was used.
+
+Archived installation log confirms 404 embedded package pairs seeded,
+`HYPRFLUX_INSTALLED_PROFILE=full`, `HYPRFLUX_OPTIONAL_MISSING_NONE`, and all 103433
+Papirus files present. No error or failed-component entries found. Durable logs:
+`.qemu-tests/cache-icon-workflow/{full-install.log,full-desktop-boot.log,acceptance-report.json}`.
+
+Both firmware boot tests passed on this same ISO. The exact-image report still
+lists four Desktop cases missing: those passed on the preceding cache image,
+not this rebuilt digest. Do not claim a complete latest-image VM matrix or
+physical-hardware certification. The green-icon requirement is verified on the
+actual installed desktop, not just the standalone SVG preview.
+
+### Prior workflow and space recovery history
+
+User approved removing only completed `work/` build scratch. Acquired the build
+lock, rechecked mount absence and untracked-only scope, then removed that exact
+tree. `df -h` reported 28 GiB available. ISOs, VM disks and evidence
+were preserved. Follow-up task `sh_19d154dd5001x8ZdJwVJ9uUUN7` now verifies the
+new ISO checksum and runs the pending clean embedded Full UEFI/NVMe install and
+desktop boot, without an external cache share. Durable output stays in
+`.qemu-tests/cache-icon-workflow/{full-install.log,full-desktop-boot.log,acceptance-report.json}`.
+Original stopped workflow is retained as historical evidence; do not rerun it
+from the beginning or rebuild another ISO concurrently.
+
+Workflow stopped safely **before Full installation** at its free-space guard:
+20.61 GiB available versus 26 GiB required. This is not an installer failure.
+All four compactions passed `qemu-img check` and content comparison, retaining
+bootable disks. New icon-enabled ISO built and SHA256 verified:
+`out/build-20261102T153842Z-1/hyprflux-2026.11.02-x86_64.iso` (2.7 GiB), digest
+`e969e0ae6c70c02157561c0ab9be43e1ba555037a08dac0f01ea8977d06a584c`.
+Both actual firmware boot tests passed. Full install/desktop boot and the
+notification screenshot remain pending on this new image. Completed build
+scratch `work/` uses approximately 6.7 GiB and has no active mounts; reclaiming
+that scratch tree would allow the guarded Full test without deleting ISOs,
+VM disks, logs or screenshots.
+
+User approved verified lossless compaction of the four completed cache-candidate
+VM disks. Workflow `sh_19ce59509001SbBXbkbBHI48vj` runs
+`.qemu-tests/cache-icon-workflow/run.py`: lock/check/compare each disk before
+atomic replacement, preserve all ISOs/evidence, rebuild with embedded package
+cache and the green notification icon, verify both firmware boots, then run a
+clean embedded Full UEFI/NVMe installation and desktop boot. It stops if free
+space is insufficient; no disk deletion is authorized by this workflow.
+
+Durable logs: `.qemu-tests/cache-icon-workflow/` (including `workflow.log`,
+`compaction.log`, `iso-build.log`, firmware/install/boot logs, and eventual
+`image.json`/`result.json`). Do not start competing builds/installations.
+On completion inspect the new desktop screenshot for the green success icon
+and audit Full-profile package results; this is not yet a completed test.
+
+## First-boot notification icon — source update
+
+The successful first-boot notification now passes an explicit icon to
+`notify-send`: a user-local copy of Papirus' `dialog-ok-apply.svg` using its green
+positive-color class. The packaged icon theme is not modified; warning/retry
+notifications do not receive the success checkmark. A standard theme-icon
+fallback preserves notification delivery if the SVG cannot be prepared.
+
+All **56 regression tests pass**, including success icon arguments, preserved
+Papirus source and unchanged retry behavior. Rendered the actual installed
+Papirus SVG with librsvg and visually confirmed the green checkmark. Shell
+syntax and whitespace checks pass. This change is **not embedded in the current
+cache candidate** and requires a later ISO rebuild; do not attribute current
+embedded-image VM tests to this cosmetic source update.
+
 ## Cache candidate acceptance update — 2026-11-02
+
+Expanded workflow `sh_19bcfaf62001TWCRnjLr4zfr8f` **completed successfully**:
+
+| Desktop case | State | Install + desktop boot |
+| --- | --- | --- |
+| BIOS/SATA automatic + swap | `.qemu-tests/bios-xvb713zv/` | PASS |
+| UEFI/SCSI manual GPT | `.qemu-tests/uefi-gihp5g7i/` | PASS |
+| BIOS/VirtIO manual GPT | `.qemu-tests/bios-px8x27vl/` | PASS |
+
+Together with `.qemu-tests/uefi-bwrykszy/`, all four Desktop paths pass on this
+exact digest. All screenshots inspected: rendered Waybar, first-login completion
+and no apparent config warning. Each archived install log confirms 383 embedded
+package pairs seeded; no error/failed-component entries were found. Report
+`.qemu-tests/cache-candidate-acceptance-report.json` has only Full UEFI automatic
+missing. Host free space is **7.9 GiB**: do not start another full installation
+or ISO rebuild without reclaiming space. The green success-icon change remains
+source-only and is not visible in these older candidate screenshots.
 
 Candidate `out/build-20261101T211053Z-1/hyprflux-2026.11.01-x86_64.iso`, digest
 `faeda8bffa4a1f19992b75202ea9174d5157bab309fd3577dad29c02f3759c22`:

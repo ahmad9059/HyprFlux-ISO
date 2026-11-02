@@ -791,7 +791,17 @@ if [ "$session_pending" -eq 0 ]; then
     mkdir -p "$(dirname "$MARKER")"
     touch "$MARKER"
     rm -f "$HOME/.config/autostart/hyprflux-first-boot.desktop"
-    notify-send "HyprFlux" "First-boot setup complete!" 2>/dev/null || true
+    # Papirus' checkmark uses its neutral text color by default. Keep the
+    # packaged theme untouched; use its positive (green) palette in a local copy.
+    success_icon="$HOME/.local/share/icons/hyprflux-first-boot-success.svg"
+    papirus_icon="/usr/share/icons/Papirus/24x24/actions/dialog-ok-apply.svg"
+    notification_icon="dialog-ok-apply"
+    if mkdir -p "$(dirname "$success_icon")" && [[ -r "$papirus_icon" ]] \
+        && sed 's/class="ColorScheme-Text"/class="ColorScheme-PositiveText"/g' \
+            "$papirus_icon" > "$success_icon"; then
+        notification_icon="$success_icon"
+    fi
+    notify-send --icon="$notification_icon" "HyprFlux" "First-boot setup complete!" 2>/dev/null || true
 else
     notify-send "HyprFlux" "Session setup will retry next login; see ~/.local/state/hyprflux/first-boot.log" 2>/dev/null || true
 fi
