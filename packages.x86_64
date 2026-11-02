@@ -45,6 +45,7 @@ sudo
 less
 reflector
 pciutils
+python
 
 # CPU microcode
 amd-ucode

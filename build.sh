@@ -13,7 +13,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="${SCRIPT_DIR}/work"
-OUT_DIR="${SCRIPT_DIR}/out"
+OUT_DIR="${SCRIPT_DIR}/out/build-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+PROFILE_DIR="$SCRIPT_DIR"
+STAGED_PROFILE=""
+cleanup_profile() {
+    if [[ -n "$STAGED_PROFILE" ]]; then
+        rm -rf -- "$STAGED_PROFILE"
+    fi
+}
+trap cleanup_profile EXIT
 
 # --------------------------------------------------------------------------
 # Preflight checks
@@ -25,6 +33,10 @@ if [[ $EUID -ne 0 ]]; then
     echo "Usage: sudo bash build.sh"
     exit 1
 fi
+
+# Serialise builds before either one can clean the shared work tree.
+exec 9>"${SCRIPT_DIR}/.hyprflux-build.lock"
+flock -n 9 || { echo 'Error: Another ISO build is running.' >&2; exit 1; }
 
 # Check archiso is installed
 if ! command -v mkarchiso &>/dev/null; then
@@ -60,8 +72,22 @@ if findmnt -rn -o TARGET | awk -v root="$WORK_DIR" \
 fi
 
 echo "==> Cleaning previous build artifacts..."
-rm -rf "${WORK_DIR}" "${OUT_DIR}"
+rm -rf "${WORK_DIR}"
 mkdir -p "${OUT_DIR}"
+
+# Optional acceleration, not an offline installation mode. Keep generated cache
+# content out of the source profile and preserve every prior candidate ISO.
+if [[ -n "${HYPRFLUX_PACKAGE_CACHE:-}" ]]; then
+    command -v python3 >/dev/null || { echo 'Python 3 is required for package-cache staging.' >&2; exit 1; }
+    STAGED_PROFILE=$(mktemp -d "${TMPDIR:-/tmp}/hyprflux-profile.XXXXXXXX")
+    for entry in profiledef.sh pacman.conf packages.x86_64 airootfs efiboot grub syslinux; do
+        cp -a -- "${SCRIPT_DIR}/${entry}" "${STAGED_PROFILE}/"
+    done
+    python3 "${SCRIPT_DIR}/airootfs/root/lib/package-cache.py" stage \
+        "$HYPRFLUX_PACKAGE_CACHE" "${STAGED_PROFILE}/airootfs/opt/hyprflux/package-cache" \
+        --limit-mib "${HYPRFLUX_CACHE_LIMIT_MIB:-2048}"
+    PROFILE_DIR="$STAGED_PROFILE"
+fi
 
 # --------------------------------------------------------------------------
 # Build ISO
@@ -70,7 +96,7 @@ echo "==> Building HyprFlux ISO..."
 echo "    This will take 5-15 minutes depending on internet speed and disk I/O."
 echo ""
 
-mkarchiso -v -w "${WORK_DIR}" -o "${OUT_DIR}" "${SCRIPT_DIR}"
+mkarchiso -v -w "${WORK_DIR}" -o "${OUT_DIR}" "${PROFILE_DIR}"
 
 # --------------------------------------------------------------------------
 # Report results

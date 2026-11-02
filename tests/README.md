@@ -20,8 +20,52 @@ bash scripts/build-container.sh
 
 This caches build tools and downloaded packages. The privileged container is
 required by archiso; it mounts only this project and a dedicated package-cache
-volume. It invokes `build.sh`, which clears the project's previous `work/` and
-`out/` artifacts. Test disks and logs under `.qemu-tests/` are preserved.
+volume. It invokes `build.sh`, which clears the project's previous `work/` tree
+but preserves existing ISOs. Each build writes to a unique `out/build-*/`
+directory. Test disks and logs under `.qemu-tests/` are preserved.
+Both QEMU launchers discover completed images in `out/` and one directory level
+below it. Automatic selection requires a `.sha256` sidecar so it skips partial
+builds; an explicit ISO path remains supported. Discovery does not itself verify
+the checksum contents.
+
+### Optional package cache inside the ISO
+
+```bash
+# Use signed package pairs already in the container's persistent build cache:
+bash scripts/build-container.sh --with-package-cache
+
+# Or use a populated cache on an Arch build host (up to 2 GiB by default):
+sudo env HYPRFLUX_PACKAGE_CACHE=/var/cache/pacman/pkg \
+  HYPRFLUX_CACHE_LIMIT_MIB=2048 bash build.sh
+```
+
+The cache is staged in a temporary profile; no binary packages are added to the
+source tree. Archives require a detached signature, are bounded by the size
+limit, and receive a SHA256 integrity manifest. This packages existing cache
+contents; it does not download a complete desktop bundle or promise that cached
+versions match the repositories on installation day. An empty/unsigned cache
+fails the opt-in build explicitly rather than silently producing an unseeded ISO.
+
+Before pacstrap, the installer verifies and copies this seed directly to the
+target disk's pacman cache (not live RAM), preserving existing downloads and at
+least 2 GiB free space. Upstream HyprFlux package transactions reuse that same
+standard cache. Pacman still selects repository versions and verifies package
+signatures; stale or missing packages download normally. Corrupt cache manifests
+or unavailable cache media cause a logged warning and normal online fallback.
+Internet remains required for repositories, updates, Git clones and AUR builds.
+Performance depends on cache freshness; no new speed claim is made without a
+matching installed-desktop test.
+
+### Hardware and display diagnostics
+
+The live installer records PCI graphics/network/storage IDs, bound drivers and
+DRM connector modes in `/var/log/hyprflux-hardware.json`, copied to the installed
+system as `/var/log/hyprflux/live-hardware.json`. It excludes device serial
+numbers. Missing-driver warnings are advisory: the installed driver may differ.
+The report never pins live DRM card numbers or a guessed resolution into the
+target desktop. Hyprland selects the connected monitor's preferred/native mode
+at startup; custom scaling, unusual EDIDs and hybrid-GPU behavior still require
+real-hardware validation.
 
 Host requirements: `qemu-system-x86_64`, `qemu-img`, `xorriso`, `blkid`, Python 3,
 and `edk2-ovmf` for UEFI. Run as your normal user, with access to `/dev/kvm`.

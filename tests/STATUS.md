@@ -2,6 +2,89 @@
 
 This is a progress checkpoint, **not production certification**.
 
+## Cache candidate acceptance update — 2026-11-02
+
+Candidate `out/build-20261101T211053Z-1/hyprflux-2026.11.01-x86_64.iso`, digest
+`faeda8bffa4a1f19992b75202ea9174d5157bab309fd3577dad29c02f3759c22`:
+
+- Actual UEFI/GRUB firmware boot **PASS**, `.qemu-tests/uefi-1ka76mv4/serial.log`.
+- Actual BIOS/Syslinux firmware boot **PASS**, `.qemu-tests/bios-musgqwud/serial.log`.
+- Clean embedded Desktop UEFI/NVMe automatic installation and first desktop boot
+  **PASS**, `.qemu-tests/uefi-bwrykszy/`. Screenshot inspected: rendered Waybar,
+  first-login completion and no apparent configuration warning.
+- Archived installation serial log confirms **383 package pairs seeded from the
+  ISO**, `HYPRFLUX_OPTIONAL_MISSING_NONE`, `HYPRFLUX_TEST_INSTALL_PASS`; no error
+  or failed-component entries were found. No external package-cache share was
+  supplied. The desktop boot serial log contains `HYPRFLUX_TEST_BOOT_PASS`.
+
+The prior workflow completed successfully (persistent harness output:
+`/home/ahmad/.local/share/opencode/shell/3365ccc0f42f97264580ade1793488b83d9275ba/sh_198fecb4f001SovhuUlHAvas2n.out`).
+Temporary `/tmp/opencode` logs disappeared between sessions; underlying state
+logs/screenshots remain. Store the regenerated exact-image report at
+`.qemu-tests/cache-candidate-acceptance-report.json` rather than relying on /tmp.
+
+Expanded Desktop acceptance workflow `sh_19bcfaf62001TWCRnjLr4zfr8f` now runs
+sequential clean embedded BIOS/SATA automatic + swap, UEFI/SCSI manual GPT, and
+BIOS/VirtIO manual GPT installations and desktop boots, without external package
+seeding. Each new install requires 12 GiB host free space; no new compaction or
+disk deletion is performed. Logs: `/tmp/opencode/cache-{bios-auto,uefi-manual,bios-manual}-{install,boot}.log`.
+Full-profile acceptance on this digest remains untested. Do not treat the
+previous ISO's complete matrix as acceptance of this new image.
+
+Fixed a test-launcher regression caused by nested build outputs: automatic ISO
+discovery now searches `out/` and its build directories, ignores symlinks and
+requires a completion checksum sidecar. This does not replace checksum
+verification. Root-free regression suite: **56 PASS**; shell syntax and
+`git diff --check` PASS. These launcher-only changes do not require rebuilding
+the ISO. No controlled speedup or physical-hardware compatibility claim is made.
+
+## New acceleration changes — 2026-11-02 (not in the accepted ISO)
+
+Added optional ISO package-cache staging/target seeding with archive/signature
+pairs, SHA256 integrity validation, a configurable 2 GiB staging limit, target
+free-space reserve, no-overwrite behavior and online fallback. Package selection
+and signature enforcement remain pacman's responsibility; upstream HyprFlux
+transactions use the seeded standard target cache. This is not offline mode.
+
+Builds now preserve accepted ISOs and use unique output directories. Container
+builds expose `--with-package-cache`. Added read-only PCI/DRM hardware inventory;
+native display selection remains deferred to the installed desktop, without
+persisting live card numbers or guessed resolutions.
+
+Root-free tests: **55 passed**; shell syntax and `git diff --check` passed.
+Real host-cache staging/seeding also passed: 65 signed package pairs (53,595,244
+bytes), with identical hashes in the target cache. Container pacman read the
+seeded Archiso package metadata and `pacman-key --verify` reported a good trusted
+signature from David Runge. This verifies transfer/signature preservation, not
+an installation-speed benchmark. A mocked builder contract test passed: staged
+cache reached mkarchiso, source profile stayed untouched, and the accepted ISO
+survived both successful and deliberately failed rebuilds. ShellCheck passed
+with existing unused-cross-function-variable warning SC2034 excluded.
+
+Cache-enabled candidate build **completed** as task
+`sh_198f363e4001iLuT2S06PPTb10`;
+log `/tmp/opencode/cache-candidate-build-20261102.log`. Image:
+`out/build-20261101T211053Z-1/hyprflux-2026.11.01-x86_64.iso` (2.2 GiB), SHA256
+`faeda8bffa4a1f19992b75202ea9174d5157bab309fd3577dad29c02f3759c22`.
+The builder used the host's UTC clock for filenames; these are the new
+2026-11-02 source changes despite the filename date. The previous accepted ISO
+remains untouched. Build-root integrity check passed for all **383 signed
+package pairs / 986,274,771 bytes**; both helper files match current source.
+
+Acceptance workflow `sh_198fecb4f001SovhuUlHAvas2n` runs checksum verification,
+actual UEFI/BIOS firmware smoke, then a clean embedded Desktop UEFI/NVMe install
+and first desktop boot. **No external package-cache share is supplied.** Logs:
+`/tmp/opencode/cache-candidate-{uefi-smoke,bios-smoke,install,first-boot}.log`.
+Do not run another installation concurrently or relabel older VM evidence.
+Inspect cache-seed logs, screenshot and timings before making performance claims.
+
+Upstream HEAD inspected at `0f62647d95178eefa7cf8cd1b66760e93a260ef7` (two commits
+ahead of the tested pin); changed modules are Plymouth and hardware-temperature
+configuration. The ISO continues to pin the accepted revision rather than
+silently adopting untested upstream changes. Existing initramfs normalization
+and Waybar parsing protections remain in place.
+The 2026-11-01 ISO/matrix below does **not** validate these new source changes.
+
 ## Verified
 
 - `python3 -m unittest discover -s tests -v`: **45 tests passed**.

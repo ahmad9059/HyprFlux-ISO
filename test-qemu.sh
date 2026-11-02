@@ -137,13 +137,12 @@ done
 
 # Find ISO if not specified (installation mode only)
 if [[ "${BOOT_DISK_ONLY}" != true ]] && [[ -z "${ISO_FILE}" ]]; then
-  shopt -s nullglob
-  for candidate in "${OUT_DIR}"/*.iso; do
+  while IFS= read -r -d '' candidate; do
+    [[ -f "${candidate}.sha256" && ! -L "$candidate" ]] || continue
     [[ -z "$ISO_FILE" || "$candidate" -nt "$ISO_FILE" ]] && ISO_FILE="$candidate"
-  done
-  shopt -u nullglob
+  done < <(find "$OUT_DIR" -maxdepth 2 -type f -name '*.iso' -print0 2>/dev/null)
   if [[ -z "${ISO_FILE}" ]]; then
-    echo "Error: No ISO found in ${OUT_DIR}/"
+    echo "Error: No completed ISO with a checksum found in ${OUT_DIR}/ or its build directories."
     echo "Run ./build.sh first to build the ISO."
     exit 1
   fi

@@ -67,6 +67,16 @@ def resumed_machine(metadata, profile):
     return {**metadata, "profile": profile, "embedded": False, "resumed": True}
 
 
+def latest_iso(directory):
+    # A checksum sidecar is written only after mkarchiso completes. Do not
+    # silently select a partial image from a failed or still-running build.
+    candidates = [path for pattern in ('*.iso', '*/*.iso')
+                  for path in directory.glob(pattern)
+                  if path.is_file() and not path.is_symlink()
+                  and path.with_name(path.name + '.sha256').is_file()]
+    return max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)), default=None)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("iso", nargs="?", type=Path)
@@ -213,7 +223,7 @@ def main():
             f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(source)}\n"
             for path in sorted(source.rglob("*")) if path.is_file()
         ))
-        iso = args.iso.resolve() if args.iso else next(iter(sorted((ROOT / "out").glob("*.iso"), key=lambda p: p.stat().st_mtime, reverse=True)), None)
+        iso = args.iso.resolve() if args.iso else latest_iso(ROOT / "out")
         if iso is None or not iso.is_file():
             parser.error("Build an ISO or supply its path")
         if args.embedded:

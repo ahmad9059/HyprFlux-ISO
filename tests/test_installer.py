@@ -25,6 +25,31 @@ def bash(code):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_launchers_discover_nested_completed_isos_not_partial_builds(self):
+        module = smoke_module()
+        with tempfile.TemporaryDirectory(prefix='hyprflux-test-') as temp:
+            out = Path(temp)
+            self.assertIsNone(module.latest_iso(out))
+            images = []
+            for index, name in enumerate(('old.iso', 'build-new/new.iso', 'build-failed/partial.iso')):
+                path = out / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'fixture')
+                os.utime(path, (100 + index, 100 + index))
+                if index < 2:
+                    path.with_name(path.name + '.sha256').touch()
+                images.append(path)
+            self.assertEqual(module.latest_iso(out), images[1])
+            alias = out / 'alias.iso'
+            alias.symlink_to(images[2])
+            alias.with_name(alias.name + '.sha256').touch()
+            self.assertEqual(module.latest_iso(out), images[1])
+            launcher = (ROOT / 'test-qemu.sh').read_text()
+            block = launcher.split('# Find ISO if not specified (installation mode only)', 1)[1]
+            block = block.split('\nif [[ "${BOOT_DISK_ONLY}" != true ]] && [[ ! -f', 1)[0]
+            self.check_bash(f'OUT_DIR={str(out)!r}\nBOOT_DISK_ONLY=false\nISO_FILE=""\n'
+                            + block + f'\n[[ "$ISO_FILE" == {str(images[1])!r} ]]')
+
     def test_exact_image_report_excludes_repairs_and_other_images(self):
         import importlib.util
         import json

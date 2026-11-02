@@ -103,6 +103,9 @@ INSTALL_BOOT_MODE=$(detect_boot_mode)
 INSTALL_HAS_NVIDIA=$(detect_nvidia)
 log_info "Boot mode: ${INSTALL_BOOT_MODE^^}"
 log_info "NVIDIA GPU: ${INSTALL_HAS_NVIDIA}"
+if ! python3 "${SCRIPT_DIR}/lib/hardware-report.py" > /var/log/hyprflux-hardware.json; then
+    log_warn "Hardware inventory unavailable; continuing with normal driver detection."
+fi
 tui_wait "Ready" 1
 }
 
@@ -765,6 +768,16 @@ step_base_install() {
         die "Could not refresh Arch signing keys. Check connectivity and the system date."
     fi
     stop_progress
+
+    # Seed the target cache, not the RAM-backed live overlay. This cache remains
+    # available to pacstrap and all later upstream HyprFlux pacman transactions.
+    start_progress "Preparing optional ISO package cache..."
+    if ! python3 "${SCRIPT_DIR}/lib/package-cache.py" seed \
+        /opt/hyprflux/package-cache "${MOUNT_POINT}/var/cache/pacman/pkg" \
+        >> "$PROGRESS_LOG" 2>&1; then
+        log_warn "Optional ISO package cache unavailable; packages will download normally."
+    fi
+    stop_progress
     local max_retries=3
     local retry_count=0
     local pacstrap_success=false
@@ -823,6 +836,10 @@ step_base_install() {
         die "fstab generation produced an empty file — cannot continue."
     fi
     log_ok "Base system installed successfully."
+    if [[ -s /var/log/hyprflux-hardware.json ]]; then
+        mkdir -p "${MOUNT_POINT}/var/log/hyprflux"
+        cp /var/log/hyprflux-hardware.json "${MOUNT_POINT}/var/log/hyprflux/live-hardware.json"
+    fi
     tui_wait "" 1
 }
 

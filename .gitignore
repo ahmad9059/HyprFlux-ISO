@@ -3,6 +3,7 @@ references/
 
 # Build artifacts
 work/
+.hyprflux-build.lock
 out/
 *.iso
 *.sha256

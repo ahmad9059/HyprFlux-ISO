@@ -2,6 +2,15 @@
 
 ## Goal
 
+### 2026-11-02 acceleration amendment
+
+Before pacstrap, optionally verify the ISO package-cache manifest and copy signed
+archive pairs directly to the target cache. Do not consume the live overlay for
+this seed, overwrite existing downloads, disable signatures or force package
+versions. Preserve a target free-space reserve and fall back online on cache
+failure. Collect read-only PCI/DRM diagnostics; never turn live DRM device names
+or guessed modes into installed monitor configuration.
+
 Implement all the interactive installer steps: network setup, timezone/locale/keyboard selection, hostname/user creation, disk partitioning (automatic + manual), and base system installation via pacstrap. This is the largest phase -- the "meat" of the installer.
 
 After this phase, the installer can take a bare machine from boot to a working base Arch Linux system (without HyprFlux yet -- that's Phase 5).

@@ -2,6 +2,16 @@
 
 ## Goal
 
+### 2026-11-02 acceleration amendment
+
+The default remains an online installation. At the user's request, an optional
+signed-package cache can be embedded using `HYPRFLUX_PACKAGE_CACHE` (or
+`scripts/build-container.sh --with-package-cache`). This is a download seed, not
+an offline repository: never bypass package signatures, freeze repository DBs,
+or force stale versions. Stage it outside the tracked profile, bound its size,
+and preserve the last accepted ISO. Builds use a lock and unique output
+directories rather than deleting all previous images. See `tests/README.md`.
+
 Set up the foundational archiso profile that `mkarchiso` uses to build the HyprFlux ISO. This phase creates all the files that archiso requires: the profile definition, package list, pacman configuration, build script, and the live environment's filesystem structure.
 
 After this phase, you should be able to run `sudo bash build.sh` and get a bootable ISO (with a blank TTY -- no installer yet).
