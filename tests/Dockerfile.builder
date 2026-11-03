@@ -5,5 +5,6 @@ RUN printf '%s\n' \
     'Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch' \
     > /etc/pacman.d/mirrorlist && \
     pacman -Syu --noconfirm && \
-    pacman -S --needed --noconfirm archiso grub git python shellcheck
+    pacman -S --needed --noconfirm archiso grub git python shellcheck gum
 WORKDIR /project
+ENV PYTHONDONTWRITEBYTECODE=1

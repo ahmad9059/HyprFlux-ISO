@@ -48,6 +48,19 @@ assert_installer_cleanup() {
 assert_installer_cleanup /
 uid=$(id -u fluxcheck)
 export XDG_RUNTIME_DIR="/run/user/$uid"
+if [[ -f /etc/hyprflux-test-password-login ]]; then
+    if grep -R -Eq '^[[:space:]]*User[[:space:]]*=[[:space:]]*fluxcheck[[:space:]]*$' \
+        /etc/sddm.conf /etc/sddm.conf.d 2>/dev/null; then
+        echo 'ERROR: password-login test has a configured test autologin user'
+        exit 1
+    fi
+    for ((attempt=0; attempt<90; attempt++)); do
+        if pgrep -f '/sddm-greeter' >/dev/null; then break; fi
+        sleep 1
+    done
+    pgrep -f '/sddm-greeter' >/dev/null
+    echo HYPRFLUX_TEST_GREETER_READY
+fi
 for ((attempt=0; attempt<180; attempt++)); do
     instance=$(find "$XDG_RUNTIME_DIR/hypr" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1 || true)
     if [[ -n "$instance" && -S "$instance/.socket.sock" \
@@ -67,6 +80,28 @@ errors=$(runuser -u fluxcheck -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
 [[ -z "${errors//[[:space:]]/}" ]] || { echo "$errors"; exit 1; }
 runuser -u fluxcheck -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     HYPRLAND_INSTANCE_SIGNATURE="$HYPRLAND_INSTANCE_SIGNATURE" hyprctl monitors
+# Compare the exact legacy dispatch packet used by official Waybar 0.15.0 with
+# the Lua packet supported by waybar-git. Do not silently replace a working bar.
+runuser -u fluxcheck -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    HYPRLAND_INSTANCE_SIGNATURE="$HYPRLAND_INSTANCE_SIGNATURE" python - <<'PY'
+import json, os, socket
+from pathlib import Path
+path = Path(os.environ['XDG_RUNTIME_DIR']) / 'hypr' / os.environ['HYPRLAND_INSTANCE_SIGNATURE'] / '.socket.sock'
+def request(message):
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(3)
+        client.connect(str(path))
+        client.sendall(message.encode())
+        return client.recv(65536).decode()
+original = json.loads(request('j/activeworkspace'))['name']
+legacy = request('dispatch workspace 2')
+modern = request('/dispatch hl.dsp.focus({ workspace = "2" })')
+restored = request('/dispatch hl.dsp.focus({ workspace = ' + json.dumps(original, ensure_ascii=False) + ' })')
+print('HYPRFLUX_WAYBAR_PROTOCOL_EVALUATION=' + json.dumps(dict(
+    official_0_15_legacy_reply=legacy, lua_reply=modern, restored_reply=restored)))
+if modern.strip() != 'ok' or restored.strip() != 'ok':
+    raise SystemExit('Lua workspace dispatch failed; cannot accept a merely running bar')
+PY
 runuser -u fluxcheck -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     HYPRLAND_INSTANCE_SIGNATURE="$HYPRLAND_INSTANCE_SIGNATURE" hyprctl deprecated-config
 runuser -u fluxcheck -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \

@@ -2,6 +2,21 @@
 
 ## Goal
 
+### 2026-11-03 release/build amendment
+
+Use the same `build.sh` in local and CI builds. Cache curation uses fresh metadata
+in an isolated database, prioritizes current base/Desktop packages, and never
+updates the build host's package databases. Release signing is optional for
+development and can be required explicitly; private keys stay outside the
+profile and CI keyrings are ephemeral. Compression defaults remain unchanged
+until actual rootfs/initramfs A/B measurements and firmware/desktop tests support
+an alternative. The explicit `HYPRFLUX_COMPRESSION=zstd` recipe is experimental.
+
+Live keyring initialization has a 120-second service timeout and does not depend
+on NTP synchronization. The TUI explicitly confirms an unsynchronized clock and
+verifies signing keys before allowing automatic disk changes; never disable TLS
+or package signature checks to make blocked-NTP networks work.
+
 ### 2026-11-02 acceleration amendment
 
 The default remains an online installation. At the user's request, an optional

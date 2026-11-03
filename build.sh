@@ -16,6 +16,9 @@ WORK_DIR="${SCRIPT_DIR}/work"
 OUT_DIR="${SCRIPT_DIR}/out/build-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 PROFILE_DIR="$SCRIPT_DIR"
 STAGED_PROFILE=""
+export HYPRFLUX_COMPRESSION="${HYPRFLUX_COMPRESSION:-xz}"
+[[ "$HYPRFLUX_COMPRESSION" == xz || "$HYPRFLUX_COMPRESSION" == zstd ]] \
+    || { echo 'HYPRFLUX_COMPRESSION must be xz or zstd.' >&2; exit 2; }
 cleanup_profile() {
     if [[ -n "$STAGED_PROFILE" ]]; then
         rm -rf -- "$STAGED_PROFILE"
@@ -56,6 +59,10 @@ if [[ ! -f "${SCRIPT_DIR}/profiledef.sh" ]]; then
     exit 1
 fi
 
+# Fail before expensive/destructive build preparation if signing was requested
+# but the release key is unavailable. Keys are never staged into the profile.
+bash "${SCRIPT_DIR}/scripts/sign-iso.sh" --check
+
 # --------------------------------------------------------------------------
 # Clean previous build artifacts
 # --------------------------------------------------------------------------
@@ -77,15 +84,33 @@ mkdir -p "${OUT_DIR}"
 
 # Optional acceleration, not an offline installation mode. Keep generated cache
 # content out of the source profile and preserve every prior candidate ISO.
-if [[ -n "${HYPRFLUX_PACKAGE_CACHE:-}" ]]; then
+if [[ -n "${HYPRFLUX_PACKAGE_CACHE:-}" || "$HYPRFLUX_COMPRESSION" == zstd ]]; then
     command -v python3 >/dev/null || { echo 'Python 3 is required for package-cache staging.' >&2; exit 1; }
     STAGED_PROFILE=$(mktemp -d "${TMPDIR:-/tmp}/hyprflux-profile.XXXXXXXX")
     for entry in profiledef.sh pacman.conf packages.x86_64 airootfs efiboot grub syslinux; do
         cp -a -- "${SCRIPT_DIR}/${entry}" "${STAGED_PROFILE}/"
     done
-    python3 "${SCRIPT_DIR}/airootfs/root/lib/package-cache.py" stage \
-        "$HYPRFLUX_PACKAGE_CACHE" "${STAGED_PROFILE}/airootfs/opt/hyprflux/package-cache" \
-        --limit-mib "${HYPRFLUX_CACHE_LIMIT_MIB:-2048}"
+    if [[ -n "${HYPRFLUX_PACKAGE_CACHE:-}" ]]; then
+        # Sync metadata into an EMPTY isolated database. Do not partially
+        # upgrade or change the native build host's installed/sync databases.
+        mkdir -p "${STAGED_PROFILE}/cache-db/local" "${STAGED_PROFILE}/cache-db/sync"
+        echo '==> Refreshing isolated cache metadata (host package database unchanged)...'
+        timeout --kill-after=5s 180 pacman --config "${SCRIPT_DIR}/pacman.conf" \
+            --dbpath "${STAGED_PROFILE}/cache-db" --logfile "${STAGED_PROFILE}/cache-db/pacman.log" \
+            -Sy --noconfirm
+        pacman --config "${SCRIPT_DIR}/pacman.conf" --dbpath "${STAGED_PROFILE}/cache-db" -Sl \
+            > "${STAGED_PROFILE}/repository-packages.txt"
+        python3 "${SCRIPT_DIR}/airootfs/root/lib/package-cache.py" stage \
+            "$HYPRFLUX_PACKAGE_CACHE" "${STAGED_PROFILE}/airootfs/opt/hyprflux/package-cache" \
+            --limit-mib "${HYPRFLUX_CACHE_LIMIT_MIB:-2048}" \
+            --repository-list "${STAGED_PROFILE}/repository-packages.txt"
+        cp "${STAGED_PROFILE}/airootfs/opt/hyprflux/package-cache/manifest.json" \
+            "${OUT_DIR}/package-cache-manifest.json"
+    fi
+    if [[ "$HYPRFLUX_COMPRESSION" == zstd ]]; then
+        sed -i 's/^COMPRESSION=.*/COMPRESSION="zstd"/; s/^COMPRESSION_OPTIONS=.*/COMPRESSION_OPTIONS=(-T2 -3)/' \
+            "${STAGED_PROFILE}/airootfs/etc/mkinitcpio.conf.d/archiso.conf"
+    fi
     PROFILE_DIR="$STAGED_PROFILE"
 fi
 
@@ -114,6 +139,7 @@ if [[ -n "$ISO_FILE" ]]; then
 
     # Generate SHA256
     (cd "$OUT_DIR" && sha256sum "$(basename "$ISO_FILE")" > "$(basename "$ISO_FILE").sha256")
+    bash "${SCRIPT_DIR}/scripts/sign-iso.sh" "$ISO_FILE"
     echo "  SHA256: $(cut -d' ' -f1 "${ISO_FILE}.sha256")"
     echo "============================================"
     echo ""

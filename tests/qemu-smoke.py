@@ -95,9 +95,21 @@ def main():
     parser.add_argument("--package-cache", type=Path, help="Read-only host package cache to seed into the disposable target (normal pacman signature checks still apply)")
     parser.add_argument("--manual-layout", action="store_true", help="Use a prepared GPT manual-partition fixture and real manual validation (new install, no swap)")
     parser.add_argument("--timeout", type=int, default=None)
+    parser.add_argument("--memory", type=int, help="Guest RAM in MiB (boot defaults to recorded install RAM)")
+    parser.add_argument("--offline", action="store_true", help="No external guest networking; live smoke or installed boot only")
+    parser.add_argument("--no-ntp", action="store_true", help="Mask live time synchronization for direct-boot testing")
+    parser.add_argument("--password-login", action="store_true", help="New install: verify the real SDDM password login, without test autologin")
     args = parser.parse_args()
     if args.embedded and not args.install:
         parser.error("--embedded requires a new --install run")
+    if args.offline and (args.install or args.resume):
+        parser.error("Offline mode tests live boot/network setup, not an offline installation")
+    if args.password_login and not args.install:
+        parser.error("--password-login selects a new installation; boot remembers the recorded setting")
+    if args.memory is not None and not 512 <= args.memory <= 32768:
+        parser.error("Guest memory must be between 512 and 32768 MiB")
+    if args.no_ntp and args.firmware_boot:
+        parser.error("--no-ntp uses direct kernel boot; test firmware loaders separately")
     if args.manual_layout and (not args.install or args.swap != 0):
         parser.error("--manual-layout requires a new --install with --swap 0")
     if args.package_cache:
@@ -128,6 +140,8 @@ def main():
         if args.boot and not (state / "installed.ok").is_file():
             parser.error("Not a completed test installation (installed.ok missing)")
         metadata = json.loads((state / "machine.json").read_text())
+        args.memory = args.memory or metadata.get("memory_mib", 6144)
+        args.password_login = metadata.get("password_login", False)
         args.bios = metadata["bios"]
         args.disk_bus = metadata["disk_bus"]
         args.profile = args.profile or metadata.get("profile", "full")
@@ -140,7 +154,8 @@ def main():
         state = Path(tempfile.mkdtemp(prefix="bios-" if args.bios else "uefi-", dir=base))
         run("qemu-img", "create", "-f", "qcow2", str(state / "disk.qcow2"), "40G")
         args.profile = args.profile or "desktop"
-        metadata = {"bios": args.bios, "disk_bus": args.disk_bus, "profile": args.profile, "embedded": args.embedded, "layout": "manual-gpt" if args.manual_layout else "automatic"}
+        args.memory = args.memory or 6144
+        metadata = {"bios": args.bios, "disk_bus": args.disk_bus, "profile": args.profile, "embedded": args.embedded, "layout": "manual-gpt" if args.manual_layout else "automatic", "memory_mib": args.memory, "offline": args.offline, "no_ntp": args.no_ntp, "password_login": args.password_login}
         (state / "machine.json").write_text(json.dumps(metadata))
     disk_path = state / "disk.qcow2"
     if disk_path.is_symlink() or not disk_path.is_file():
@@ -165,8 +180,10 @@ def main():
     sockets = tempfile.TemporaryDirectory(prefix="hq-", dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None)
     serial = Path(sockets.name) / "serial.sock"
     qmp = Path(sockets.name) / "qmp.sock"
-    command = ["qemu-system-x86_64", "-machine", "q35", "-enable-kvm", "-cpu", "host", "-m", "6G", "-smp", "4",
-               "-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0",
+    if not isinstance(args.memory, int) or not 512 <= args.memory <= 32768:
+        parser.error("Guest memory must be between 512 and 32768 MiB")
+    command = ["qemu-system-x86_64", "-machine", "q35", "-enable-kvm", "-cpu", "host", "-m", str(args.memory), "-smp", "4",
+               "-netdev", "user,id=net0" + (",restrict=on" if args.offline else ""), "-device", "virtio-net-pci,netdev=net0",
                "-chardev", f"socket,id=serial0,path={serial},server=on,wait=off",
                "-device", "isa-serial,chardev=serial0", "-monitor", "none", "-no-reboot",
                "-qmp", f"unix:{qmp},server=on,wait=off"]
@@ -226,10 +243,9 @@ def main():
         iso = args.iso.resolve() if args.iso else latest_iso(ROOT / "out")
         if iso is None or not iso.is_file():
             parser.error("Build an ISO or supply its path")
-        if args.embedded:
-            with iso.open("rb") as image:
-                digest = hashlib.file_digest(image, "sha256").hexdigest()
-            (state / "image.sha256").write_text(f"{digest}  {iso}\n")
+        with iso.open("rb") as image:
+            digest = hashlib.file_digest(image, "sha256").hexdigest()
+        (state / "image.sha256").write_text(f"{digest}  {iso}\n")
         command += ["-cdrom", str(iso), "-boot", "once=d"]
         if not args.firmware_boot:
             uuid = run("blkid", "-p", "-s", "UUID", "-o", "value", str(iso))
@@ -244,7 +260,7 @@ def main():
                     run("xorriso", "-osirrox", "on", "-indev", str(iso), "-extract",
                         f"/hyprflux/boot/x86_64/{name}", str(payload / name))
             command += ["-kernel", str(payload / "vmlinuz-linux"), "-initrd", str(payload / "initramfs-linux.img"),
-                        "-append", f"archisobasedir=hyprflux archisosearchuuid={uuid} cow_spacesize=2G plymouth.enable=0 console=ttyS0,115200n8 hyprflux.test=1 hyprflux.testdisk={devices[args.disk_bus]} hyprflux.testswap={args.swap} hyprflux.profile={args.profile} systemd.mask=getty@tty1.service"]
+                        "-append", f"archisobasedir=hyprflux archisosearchuuid={uuid} cow_spacesize=2G plymouth.enable=0 console=ttyS0,115200n8 hyprflux.test=1 hyprflux.testdisk={devices[args.disk_bus]} hyprflux.testswap={args.swap} hyprflux.profile={args.profile} systemd.mask=getty@tty1.service" + (" systemd.mask=systemd-timesyncd.service" if args.no_ntp or args.offline else "") + (" hyprflux.passwordlogin=1" if args.password_login else "")]
         command += ["-fsdev", f"local,id=src,path={source},security_model=none,readonly=on",
                     "-device", "virtio-9p-pci,fsdev=src,mount_tag=hyprflux"]
         if args.package_cache:
@@ -272,6 +288,7 @@ def main():
             started = False
             diagnosing = False
             firmware_stage = 0
+            login_sent = False
             while time.monotonic() < deadline:
                 if shutil.disk_usage(base).free < 2 * 1024 ** 3:
                     raise RuntimeError("Host has less than 2 GiB free; stopping the VM before the host filesystem fills")
@@ -287,6 +304,17 @@ def main():
                 log.flush()
                 buffer = (buffer + data)[-100000:]
                 plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", buffer)
+                if args.boot and args.password_login and not login_sent and marker_seen(plain, b"HYPRFLUX_TEST_GREETER_READY"):
+                    # Public disposable test password only. No production
+                    # credential or authentication bypass is used here.
+                    time.sleep(2)
+                    try:
+                        request(qmp, "screendump", {"filename": str(state / "greeter.png"), "format": "png"})
+                    except (OSError, RuntimeError) as error:
+                        (state / "greeter-capture-error.log").write_text(str(error))
+                    subprocess.run([sys.executable, str(ROOT / "tests/qemu-console.py"), str(state),
+                                    "--text", "hyprflux-test-only\n"], check=True)
+                    login_sent = True
                 if args.firmware_boot and not args.bios:
                     if firmware_stage == 0 and b"Serial console" in plain:
                         # Select the third, serial-console entry from the real
@@ -306,12 +334,14 @@ def main():
                     diagnosing = True
                 if diagnosing and re.search(rb"[\r\n]HYPRFLUX_DIAG_END[\r\n]", plain):
                     raise RuntimeError(f"Live initramfs failed to find the ISO; diagnostics saved in {state}/serial.log")
-                if not args.boot and not interrupted and (b"Welcome to the HyprFlux" in plain or b"Continue with installation" in plain):
+                if not args.boot and not interrupted and (b"Welcome to the HyprFlux" in plain or b"Continue with installation" in plain or b"Internet unavailable" in plain):
                     connection.sendall(b"\x03")
                     interrupted = True
                 if not args.boot and not started and shell_ready(plain):
                     mount = "mkdir -p /run/hyprflux-source; mount -t 9p -o trans=virtio,version=9p2000.L,ro hyprflux /run/hyprflux-source"
                     task = "bash /run/hyprflux-source/tests/guest-install.sh" if args.install else "bash /run/hyprflux-source/tests/guest-smoke.sh"
+                    if args.offline:
+                        task = "bash /run/hyprflux-source/tests/guest-offline-smoke.sh"
                     if args.embedded:
                         task = "HYPRFLUX_TEST_EMBEDDED=1 " + task
                     if args.package_cache:

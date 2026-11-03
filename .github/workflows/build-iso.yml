@@ -7,10 +7,23 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      compression:
+        description: Compression recipe (match the candidate being tested)
+        type: choice
+        options: [xz, zstd]
+        default: xz
 
 concurrency:
   group: iso-build-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build-iso:
@@ -19,11 +32,16 @@ jobs:
     container:
       image: archlinux:latest
       options: --privileged
+    env:
+      HYPRFLUX_PACKAGE_CACHE: /var/cache/pacman/pkg
+      HYPRFLUX_SIGNING_KEY: ${{ secrets.ISO_SIGNING_FINGERPRINT }}
+      GNUPGHOME: /tmp/hyprflux-release-gnupg
+      HYPRFLUX_COMPRESSION: ${{ inputs.compression || 'xz' }}
     steps:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed archiso grub git python
+          pacman -S --noconfirm --needed archiso grub git python gnupg gum
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -44,22 +62,31 @@ jobs:
           echo "All installer scripts parse OK"
 
       - name: Build ISO
+        env:
+          ISO_SIGNING_PRIVATE_KEY: ${{ secrets.ISO_SIGNING_PRIVATE_KEY }}
+          HYPRFLUX_SIGNING_PASSPHRASE: ${{ secrets.ISO_SIGNING_PASSPHRASE }}
         run: |
+          if [[ -n "$HYPRFLUX_SIGNING_KEY" ]]; then
+            [[ -n "$ISO_SIGNING_PRIVATE_KEY" ]] || { echo 'Signing fingerprint is set but private key secret is missing.'; exit 1; }
+            install -d -m 700 "$GNUPGHOME"
+            printf '%s\n' "$ISO_SIGNING_PRIVATE_KEY" | gpg --batch --import
+          fi
           echo "Building HyprFlux ISO..."
-          mkarchiso -v -w work -o out .
+          bash build.sh
           echo "Build complete."
 
       - name: Get ISO info
         id: iso
         run: |
-          ISO_FILE=$(ls out/*.iso | head -1)
+          ISO_FILE=$(find out -mindepth 2 -maxdepth 2 -type f -name '*.iso' -print -quit)
+          [[ -n "$ISO_FILE" && -f "${ISO_FILE}.sha256" ]]
           ISO_NAME=$(basename "$ISO_FILE")
           ISO_SIZE=$(du -h "$ISO_FILE" | cut -f1)
           echo "ISO: ${ISO_NAME} (${ISO_SIZE})"
           echo "file=${ISO_FILE}" >> "$GITHUB_OUTPUT"
           echo "name=${ISO_NAME}" >> "$GITHUB_OUTPUT"
           echo "size=${ISO_SIZE}" >> "$GITHUB_OUTPUT"
-          (cd out && sha256sum "$ISO_NAME" > "${ISO_NAME}.sha256")
+          (cd "$(dirname "$ISO_FILE")" && sha256sum -c "${ISO_NAME}.sha256")
           echo "SHA256: $(cat "${ISO_FILE}.sha256")"
 
       - name: Upload ISO artifact
@@ -69,8 +96,15 @@ jobs:
           path: |
             ${{ steps.iso.outputs.file }}
             ${{ steps.iso.outputs.file }}.sha256
+            ${{ steps.iso.outputs.file }}.asc
           retention-days: 14
           compression-level: 0
+
+      - name: Remove ephemeral signing keyring
+        if: always()
+        run: |
+          gpgconf --kill gpg-agent || true
+          rm -rf -- /tmp/hyprflux-release-gnupg
 
   release:
     name: Create Release
@@ -132,11 +166,12 @@ jobs:
 
             - 64-bit x86 processor
             - 4GB+ RAM (8GB recommended)
-            - 26 GiB+ disk space, plus any swap
+            - Desktop: 26 GiB+ disk; Full: 33 GiB+, plus any swap
             - Internet connection during installation
           files: |
             artifacts/**/*.iso
             artifacts/**/*.sha256
+            artifacts/**/*.asc
           # A successful ISO build is not an installed-desktop acceptance test.
           # Publish only after the exact image passes tests/README.md's matrix.
           draft: true

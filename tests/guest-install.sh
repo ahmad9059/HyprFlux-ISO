@@ -62,6 +62,7 @@ start_progress() {
 }
 stop_progress() { :; }
 die() { echo "ERROR: $*"; tail -80 "$PROGRESS_LOG"; exit 1; }
+cancel_installation() { echo 'ERROR: automated installation cancelled'; exit 1; }
 tui_menu() { echo "$disk (40G) QEMU test disk"; }
 tui_input() { if [[ "$1" == 'Swap size'* ]]; then echo "$test_swap"; else echo yes; fi; }
 tui_yesno() { (( test_swap > 0 )); }
@@ -140,6 +141,10 @@ INSTALL_BOOT_MODE=$(detect_boot_mode)
 INSTALL_HAS_NVIDIA=no
 INSTALL_PROFILE="$test_profile"
 check_internet || die 'VM network unavailable'
+# The disposable VM uses the host RTC. Simulate only the user's acknowledgement;
+# run real bounded keyring preflight. Blocked-NTP interaction is a separate test.
+confirm_install_clock() { echo '==> Test fixture acknowledges host-supplied VM clock.'; }
+prepare_installation
 if [[ "${1:-}" == --resume ]]; then
     # Only recover this harness's known, already-configured test installation.
     # Never rerun partitioning, mkfs, pacstrap, useradd or password setup.
@@ -182,13 +187,31 @@ else
     echo HYPRFLUX_OPTIONAL_MISSING_NONE
 fi
 
+# Full-profile package acceptance (test-only, not the production warning policy).
+if [[ "$INSTALL_PROFILE" == full ]]; then
+    # Release acceptance is stricter than the production optional-app warning:
+    # verify both the bulk-fallback set and the advertised extended bundle.
+    arch-chroot "$MOUNT_POINT" pacman -Q \
+        inxi swww unzip cava loupe gnome-system-monitor mousepad mpv-mpris nvtop \
+        pacman-contrib qalculate-gtk yt-dlp qt6-5compat npm rclone lazygit github-cli \
+        alacritty tldr obs-studio vlc luacheck luarocks obsidian tuned ttf-noto-nerd kdenlive \
+        mpvpaper waybar-git visual-studio-code-bin 64gram-desktop-bin vesktop foliate \
+        localsend-bin tuxedo-bin claude-code opencode-bin openai-codex-bin freedownloadmanager \
+        papirus-icon-theme | tee "$MOUNT_POINT/var/log/hyprflux-installer/full-package-audit.txt"
+    echo HYPRFLUX_FULL_PACKAGE_AUDIT_PASS
+fi
+
 # Test-only autologin lets us check a real SDDM -> Hyprland session after reboot.
 mkdir -p "$MOUNT_POINT/etc/sddm.conf.d"
+if grep -qw 'hyprflux.passwordlogin=1' /proc/cmdline; then
+    touch "$MOUNT_POINT/etc/hyprflux-test-password-login"
+else
 cat > "$MOUNT_POINT/etc/sddm.conf.d/99-test-autologin.conf" <<'EOF'
 [Autologin]
 User=fluxcheck
 Session=hyprland.desktop
 EOF
+fi
 cp /run/hyprflux-source/tests/guest-verify.sh "$MOUNT_POINT/root/guest-verify.sh"
 cat > "$MOUNT_POINT/etc/systemd/system/hyprflux-test-verify.service" <<'EOF'
 [Unit]

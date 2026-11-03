@@ -2,6 +2,319 @@
 
 This is a progress checkpoint, **not production certification**.
 
+## Latest exact-image automated acceptance — PASS
+
+Image: `out/build-20261103T010141Z-1/hyprflux-2026.11.03-x86_64.iso`
+
+SHA256: `a573bbdc1e413827cc64f3f9557587647cce324547a62551947d4c439991019e`
+
+The corrected explicit-zstd image passed both real firmware-loader smoke tests,
+offline UEFI/BIOS live boot at 4 GiB (keyring without NTP plus real undersized
+ext4 rejection), and the complete embedded, unmodified five-case matrix:
+
+| Profile/layout | Firmware / disk | Install + desktop boot | Evidence state |
+|---|---|---|---|
+| Desktop automatic, 4 GiB, NTP disabled, real password login | UEFI / NVMe, 4 GiB swap | PASS | `uefi-zjs81yt8` |
+| Desktop automatic | BIOS / SATA, 4 GiB swap | PASS | `bios-939syshr` |
+| Desktop manual GPT | UEFI / SCSI | PASS | `uefi-lk_zsva9` |
+| Desktop manual GPT | BIOS / virtio | PASS | `bios-agz21orx` |
+| Full automatic + extended package audit | UEFI / NVMe | PASS | `uefi-44yegkht` |
+
+All states are under `.qemu-tests/`. All five desktop screenshots have been
+visually inspected: wallpaper and Waybar render; green Papirus success checkmarks
+are visible in the Desktop captures. The Full capture shows the running desktop
+after its notification expired. Real password entry was injected only after the
+greeter-ready marker, without test autologin, and reached the desktop. However,
+QMP greeter capture failed with `no surface`; **no greeter screenshot was inspected**.
+
+Full audit reports `HYPRFLUX_OPTIONAL_MISSING_NONE` and
+`HYPRFLUX_FULL_PACKAGE_AUDIT_PASS`. All five runtime protocol probes reject the
+official Waybar 0.15 legacy workspace packet while accepting Lua dispatch and
+restoration; retain `waybar-git`. All installs seeded 377 package/signature pairs.
+Readonly extraction from the retained Full disk confirms 976,485,351 bytes
+seeded in 3.925 s; base stage 177 s / 124,846,831 interface receive bytes and
+desktop integration 3,023 s / 3,382,253,841 receive bytes. These are one-run
+measurements, not A/B network-savings or cold-boot-speed claims.
+
+Builder regression suite: **84 tests, all PASS, no skips**. Host suite: 84 tests,
+2 Gum-dependent skips. ShellCheck and `git diff --check` passed. Installation
+logs include a nonfatal systemd post-install preset warning about the test-masked
+live `getty@tty1` generator unit; this is not an error-free-log claim. Installed
+desktop and required package postconditions nevertheless passed.
+
+Completed Desktop disks and older generated ISOs were automatically retired;
+logs/screenshots/metadata and the final Full disk remain. About 16 GiB was free
+after completion. Durable workflow, matrix report, benchmark and extracted Full
+metrics are in `.qemu-tests/audit-acceptance-20261103/`. Earlier sections below
+are historical checkpoints, not current blockers.
+
+**Remaining release gates:** human end-to-end TUI operation, physical
+Intel/AMD/supported NVIDIA testing, Wi-Fi/audio playback, suspend/resume and
+external displays. Publisher signing still needs a real private key and trusted
+public fingerprint. Compression defaults remain xz; this accepted candidate uses
+the explicitly selected zstd recipe. No commit, push or release was performed;
+releases must remain drafts until the remaining gates pass.
+
+### Mirror-preflight ordering correction
+
+Both offline firmware-mode cases (direct-kernel UEFI/BIOS guests, 4 GiB RAM)
+passed offline-shell/keyring and real undersized-ext4 rejection checks on the
+superseded candidate. The subsequent embedded Desktop install stopped BEFORE
+disk setup: live pacman had no configured mirror servers. Keyring preflight had
+been moved before the existing mirror initialization, exposing this dependency.
+Production preflight now runs the bounded mirror refresher (with HTTPS fallback)
+before keyring refresh. Tests enforce that ordering and cover a commented-only
+mirrorlist when reflector times out. The automated fixture now treats cancellation
+as failure instead of exiting successfully and leaving the host waiting.
+
+Host regressions: **84 tests, OK (2 optional Gum tests skipped)**; ShellCheck
+passed. Production source changed, so previous image passes are historical only.
+Task `sh_19eed0914001bUnNy28pNgKKFf` builds a corrected explicit-zstd image and
+restarts all exact-image gates, reusing only the artifact-compression measurements.
+See `workflow-mirror-fix.log`; superseded candidate metadata and every attempt's
+logs are preserved. No new-image firmware/install/desktop pass is claimed yet.
+
+### Acceptance continuation — 2026-11-03
+
+The first continuation exposed a second fixture issue: a blanket `read` override
+broke banner line parsing before the real low-space guard. The override now
+simulates only the bare `read -r` keypress and delegates other reads to Bash.
+The regression now executes the real manual prompt/banner/capacity code with
+only tty/mount/capacity resources simulated, rather than a stubbed rejection.
+All 83 tests pass (2 skipped). Task `sh_19e455bca001Zu6zhJS2YpXB9d` continues
+the unchanged candidate; durable output is `workflow-resume-2.log`. Earlier
+failed-attempt logs remain intact. No new matrix results are claimed yet.
+
+The xz baseline and explicit zstd candidate built successfully. The candidate is
+`out/build-20261102T215230Z-1/hyprflux-2026.11.02-x86_64.iso`, SHA256
+`4c6c27e3374d583325a4c800dad1e1b6b0cc5323a2bd5f846a8ea9559ebaaa7c`.
+Its real UEFI and BIOS firmware-loader smoke tests passed. Offline UEFI at
+4 GiB reached the network-recovery shell and completed keyring initialization
+without waiting for NTP, but the low-space fixture then failed: the installer's
+ERR trap intercepted the fixture's expected nonzero exit despite `set +e`.
+The fixture now captures that rejection in a conditional and prints its diagnostic
+log. Production installer source and the candidate image are unchanged.
+
+Regression suite after this test-only correction: **83 tests, OK (2 skipped)**.
+Task `sh_19e4414af001oYF2zXdDmqvyo6` resumes the same checksum-verified image,
+preserving prior logs and firmware results; see `workflow-resume-1.log` in the
+audit-acceptance directory. The remaining offline/install/desktop matrix is pending.
+
+Actual two-thread artifact benchmark: rootfs xz/zstd compression 511.336/55.177 s,
+extraction 18.133/15.968 s, size 1,998,979,072/2,072,940,544 bytes. Main-initramfs
+xz-9e/zstd-3 compression 17.721/0.138 s, decompression 0.379/0.053 s, size
+13,312,316/17,695,482 bytes. These are artifact measurements, not cold USB boot
+or installation-speed claims; default compression remains xz.
+
+## Audit remediation and unattended acceptance — 2026-11-03
+
+User authorized automatic cleanup of obsolete generated artifacts without
+further questions. Source, unrelated files and physical disks remain out of
+scope. Retired the completed pre-audit Full test disk (`uefi-bh42p__v`) and
+completed pre-audit source-test disk (`bios-bijaj80s`), saving metadata/removal
+notes and preserving all logs/screenshots. Also reclaimed orphaned extracted
+boot payloads only in unlocked states without retained disks. Free space reached
+42 GiB. The prior BIOS/SATA source install and desktop boot passed; screenshot
+inspected, including green success checkmark. That result predates these fixes.
+
+### Implemented (new source; pending new-image acceptance)
+
+- Storage inspection captures/checks command status, rejects unmounted mapped/
+  RAID holders, and fails closed on missing topology/live ancestry information.
+  Manual root/ESP must be plain partitions; crypt/LVM/RAID ancestors are rejected.
+- Signing-key service has a 120-second bound, no time-sync ordering dependency,
+  and no enabled indefinite time-wait-sync service. The TUI explicitly confirms
+  an unsynchronized displayed clock and performs bounded keyring/network checks
+  **before** automatic disk setup. TLS and package signature policy are intact.
+- Full recovery clears old missing-applications reports when all tracked apps
+  are present. Branding writes a real `/etc/os-release` override atomically,
+  retains vendor metadata, and includes `ID_LIKE=arch`.
+- CI uses the same `build.sh` and optional-cache path as local builds, with an
+  explicit matching compression choice and Bash shell. Releases remain drafts.
+- Optional ISO detached signing supports a configured publisher key, private
+  passphrase descriptor, signature verification and fail-early required-signing
+  mode. CI keys are imported into an ephemeral external keyring then removed.
+  No real publisher key has been supplied; development candidates remain unsigned.
+  Real ephemeral-key tests verify signatures and reject tampered payloads.
+- Cache curation syncs fresh repository metadata into an isolated database
+  without changing host package databases; excludes stale/foreign versions,
+  deduplicates packages and prioritizes base/Desktop payloads. Seed counts,
+  bytes and timing plus stage elapsed/interface receive counters are recorded.
+  These counters are not asserted to equal package-network savings.
+- Full requires more workspace headroom (32 GiB available root, 33 GiB automatic
+  disk before swap). Release tests additionally audit the advertised Full apps
+  and all packages previously affected by batch fallback.
+- Added 4 GiB RAM and NTP-disabled test options, offline boot/keyring smoke,
+  real undersized ext4 rejection, and real SDDM password-login mode without
+  autologin. Workspace-dispatch protocol probing evaluates official Waybar's
+  legacy packet versus Lua. Keep `waybar-git` until compatibility is demonstrated:
+  inspected upstream 0.15.0 code uses legacy dispatch, while current development
+  code has explicit Lua translation required by the pinned HyprFlux setup.
+- Added actual rootfs/main-initramfs xz/zstd measurement tooling and an explicit
+  zstd build recipe. Defaults remain xz pending measured candidate validation;
+  a small fixture confirmed benchmark operation, not performance superiority.
+
+### Checks and running workflow
+
+Host suite: **82 tests discovered, OK (2 optional Gum tests skipped)**. Prior
+isolated real-Gum tests passed; the updated builder now includes Gum so all
+checks run there. ShellCheck (existing SC2034 exclusion), Bash/Python syntax,
+whitespace checks and real ephemeral GPG tamper rejection passed.
+
+Workflow `sh_19e2e12ce001pF1SHtJMPKxcVJ` runs
+`.qemu-tests/audit-acceptance-20261103/run.py`. Durable progress/logs/results are
+in `.qemu-tests/audit-acceptance-20261103/`. It builds an xz baseline, measures the
+actual rootfs/initramfs, optionally builds/tests zstd only within recorded speed/
+size thresholds, then tests both firmware loaders, offline UEFI/BIOS at 4 GiB,
+NTP-disabled 4 GiB password-login installation, the four Desktop layouts and a
+Full installation/package audit. It preserves evidence and retires completed
+test disks to avoid filling the host; only the final Full disk is retained.
+
+No competing build/install should run. On completion inspect greeter/desktop
+screenshots and protocol/cache/timing records. Automated success is not physical
+Intel/AMD/NVIDIA, Wi-Fi/audio playback, suspend/resume or external-display signoff.
+Real release authenticity still requires the publisher's private signing key and
+independently published public fingerprint; never substitute the disposable test
+key or claim that a SHA256 sidecar alone authenticates an ISO.
+
+## Read-only upstream-guidance audit — 2026-11-03
+
+Audited build/profile/CI, firmware configuration, live services, automatic and
+manual storage validation, pacman/cache behavior, wrapper cleanup/postconditions,
+desktop defaults and release acceptance. No production code was changed during
+this audit or in the already-frozen running installation test.
+
+### Highest-priority findings (not fixed yet)
+
+1. **Automatic storage checks fail open on an inspection error.**
+   `disk_is_installable()` reads `lsblk` mount output through process
+   substitution; an error is indistinguishable from an empty mount list.
+   Reproduced by extracting the actual function, mocking only block-device
+   existence and `lsblk`/`findmnt`: failed mount inspection still returns success.
+   No real disk was used. Capture and check inspection status; also reject
+   unsupported active device-mapper/RAID holders before wiping.
+2. **Manual validation accepts unsupported encrypted root.** A mocked ext4 root
+   at `/dev/mapper/cryptroot` with one physical ancestor passes the actual manual
+   validation function and real `parent_disk()` implementation. Current final
+   initramfs hooks do not configure encrypted-root unlocking. Reject unsupported
+   block stacks explicitly rather than relying only on filesystem type and a
+   single physical ancestor. Reproduction touched only a temporary directory.
+3. **Keyring startup has an unbounded NTP dependency.** The live
+   `pacman-init.service` is ordered after `time-sync.target`, while enabled
+   `systemd-time-wait-sync.service` has `TimeoutStartSec=infinity`. Base setup
+   synchronously starts keyring initialization after disk setup. HTTPS may work
+   on networks that block NTP, leaving this step waiting indefinitely. Unit
+   ordering/timeout confirmed; the blocked-NTP failure mode still needs a VM
+   reproduction. Add a bounded, explicit time/keyring preflight before wiping,
+   retaining clock/certificate/signature checks.
+
+### Other concrete gaps and focused improvements
+
+- Full-profile recovery can leave stale `missing-applications.txt`: the wrapper
+  writes it when packages are missing, but does not remove it when a subsequent
+  Full run finds none missing. This can produce false warning notifications.
+- Branding omits `ID_LIKE=arch`. On targets where `/etc/os-release` is a symlink,
+  the current output redirection follows it and overwrites the vendor file.
+  Demonstrated with a relative-symlink fixture, not asserted for every target.
+  Use a deliberate `/etc` override and retain derivative compatibility metadata.
+- CI directly invokes `mkarchiso`, bypassing the local cache-enabled build path.
+  Local tested artifacts and CI release artifacts therefore need separate exact
+  digest acceptance; the speed feature is not automatically in CI-built images.
+- Core desktop setup requires floating `waybar-git`/`wlogout` AUR packages and
+  allows three 30-minute attempts. Evaluate official stable Waybar against the
+  pinned configs before making source compilation a hard requirement. Do not
+  replace it blindly or weaken signatures; AUR availability and compilation
+  failures are different from official mirror failures.
+- Embedded cache selection is alphabetical and accepts multiple old versions.
+  Prefer current base/Desktop dependencies and record cache hit/download bytes;
+  the number of seeded archives alone does not demonstrate acceleration.
+- xz SquashFS and extreme xz live-initramfs compression merit a measured zstd
+  A/B test after the active VM finishes. Do not change defaults without measuring
+  build time, USB/VM boot time and resulting image size.
+- Release authenticity is currently a SHA256 file, not a signed release artifact.
+  Add a detached signature when a release signing key is available. Archiso's
+  rootfs signing flags do not themselves sign the downloadable ISO file.
+- Existing VM autologin is not a password-based SDDM login test. Additional
+  release cases should cover blocked NTP, offline live boot/network setup,
+  exhausted target space, 4 GiB memory, supported GPU hardware, suspend/resume
+  and real display hotplug. Full-profile minimum disk space needs measurement
+  including package caches and AUR build working space.
+
+### Existing decisions supported by current upstream guidance
+
+Keep archiso rather than rewriting the image builder; retain UEFI/BIOS firmware
+tests, mount-safe work cleanup, real systemctl, final initramfs validation,
+standard signed package caching, moderate download parallelism, pinned HyprFlux
+source, fresh-NVRAM boot checks, and draft releases. Hyprland still documents
+preferred/native monitor fallback and warns against hard-coded DRM card numbers.
+The current preferred-mode rule is appropriate; automatic HiDPI scaling is an
+optional UX evaluation, not a reason to force live-session resolutions.
+
+Sources checked:
+- https://wiki.archlinux.org/title/Archiso
+- https://man.archlinux.org/man/mkarchiso.1.en.txt (archiso 92)
+- https://wiki.archlinux.org/title/System_maintenance
+- https://www.freedesktop.org/software/systemd/man/latest/systemd-time-wait-sync.service.html
+- https://www.freedesktop.org/software/systemd/man/latest/os-release.html
+- https://wiki.hypr.land/configuring/core/monitors/ (latest-git documentation;
+  version-specific syntax must still be verified against the installed release)
+- https://github.com/hyprwm/hyprland-wiki/blob/main/content/configuring/extra/multi-gpu.md
+- https://wiki.archlinux.org/title/NVIDIA
+- https://github.com/pierres/archiso-manager
+- Pacman upstream configuration/cache documentation queried through Context7.
+
+Recommended implementation order: storage fail-closed checks, unsupported
+manual-stack rejection, bounded time/keyring setup, stale warning cleanup and
+branding metadata, then measured cache/AUR/compression optimization. These are
+audit findings, not new production-certification results.
+
+## Focused reliability changes — 2026-11-03 (source only)
+
+At the user's request, removed only four superseded cache-candidate
+`disk.qcow2` files (`uefi-bwrykszy`, `bios-xvb713zv`, `uefi-gihp5g7i`,
+`bios-px8x27vl`) and the two older ISO/checksum pairs under
+`out/build-20261101T211053Z-1/` and `out/full-audit-fix-20261101T093630Z/`.
+Locks were acquired and disk metadata/removal notes saved. Source, diagnostics,
+screenshots, newest ISO and newest Full VM were preserved. Free space recovered
+from 673 MiB to about 27 GiB. Older matrix results remain historical evidence,
+not bootable retained VMs.
+
+Small production fixes:
+- Escape from text input no longer submits a default. Required timezone,
+  locale, keyboard, hostname, username and password prompts cancel cleanly.
+- Automatic-disk reselection uses the outer menu loop rather than recursion;
+  refusing/cancelling the wipe prompt or cancelling swap-size input cannot reach
+  partitioning. Explicit blank submission still accepts a text default.
+- Live pacman configuration enables five concurrent transfers before pacstrap;
+  target configuration receives the same bounded setting. Repository definitions,
+  signature policy and download timeouts are untouched.
+- Connectivity probing has an eight-second per-endpoint bound and tries the
+  official package mirror if the Arch homepage fails, without disabling TLS.
+
+**64 root-free checks passed** before adding two optional real-Gum PTY tests.
+The real host pacman-config parser accepted the modified configuration with
+`ParallelDownloads=5`; signature policy and repository lists matched the
+original. Live HTTPS connectivity probe passed. ShellCheck (existing SC2034
+cross-function-variable exclusion), shell syntax and whitespace checks passed.
+
+Real-Gum isolated-container checks run as `sh_19dbad4f7001YDA5bU6WaJoUHo`;
+durable log `.qemu-tests/real-tui-check-20261103.log`. Initial disposable-PTY
+experiment lacked terminal dimensions; updated the test fixture to provide a
+40x120 terminal and reply to cursor-position queries. Do not call that initial
+fixture timeout a production prompt failure.
+
+The corrected real-Gum PTY run **completed successfully**: both explicit Enter
+and Escape tests pass (2 tests, 0.201 seconds). Final host discovery reports
+66 tests, OK with only those 2 Gum-dependent checks skipped on the host; all
+64 other checks pass. Thus both optional checks were also executed successfully
+in the isolated container. `git diff --check` remains clean.
+
+Current-source **hot-loaded**, not embedded-image, Desktop BIOS/SATA + swap
+install/desktop-boot workflow runs as `sh_19dbb6add001Lm4mJ1LC5s4pOO`. Durable
+logs `.qemu-tests/reliability-20261103/{desktop-install.log,desktop-boot.log}`.
+No competing installation/build should run. The retained 2026-11-02 ISO is
+unchanged and does not yet include these source fixes.
+
 ## Icon-enabled ISO: Full install and desktop boot passed
 
 Follow-up workflow `sh_19d154dd5001x8ZdJwVJ9uUUN7` completed successfully on

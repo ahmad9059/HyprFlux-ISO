@@ -2,6 +2,15 @@
 
 ## Goal
 
+### Audit acceptance amendment (2026-11-03)
+
+Add offline live boot/keyring tests, deliberately undersized ext4 rejection,
+4 GiB RAM and NTP-disabled install/boot coverage, and real SDDM password-login
+verification without test autologin. All cases remain disposable VM-only.
+Compression benchmarks do not certify boot speed or desktop operation. Signing
+tests use ephemeral keys; a real release needs the publisher's separately
+trusted key and exact-image/hardware signoff. Keep releases drafts.
+
 Set up automated ISO building via GitHub Actions, establish a testing workflow, and prepare the release pipeline. This phase ensures the project can be maintained and new ISOs can be built reliably.
 
 ---

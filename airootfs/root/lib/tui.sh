@@ -503,8 +503,7 @@ tui_input() {
   local result
   result=$(gum input "${args[@]}" 2>/dev/tty) || {
     printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty
-    printf '%s' "$default"
-    return 0
+    return 1
   }
   printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty
 

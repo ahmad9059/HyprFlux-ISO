@@ -2,6 +2,16 @@
 
 ## Goal
 
+### Audit-fix amendment (2026-11-03)
+
+Fail closed if block-device inspection fails. Automatic mode rejects mounted,
+read-only, live-media and mapped/RAID-held devices. Manual mode accepts plain
+partitions with ext4 root/FAT32 ESP only; reject encryption/LVM/RAID ancestors
+explicitly. A bounded clock/keyring preflight precedes disk setup. Preserve Arch
+compatibility via `ID_LIKE=arch` and replace the `/etc/os-release` entry rather
+than following a vendor-file symlink. Full profile reserves additional working
+space (32 GiB available root; 33 GiB automatic disk before swap).
+
 ### 2026-11-02 acceleration amendment
 
 Before pacstrap, optionally verify the ISO package-cache manifest and copy signed
@@ -10,6 +20,15 @@ this seed, overwrite existing downloads, disable signatures or force package
 versions. Preserve a target free-space reserve and fall back online on cache
 failure. Collect read-only PCI/DRM diagnostics; never turn live DRM device names
 or guessed modes into installed monitor configuration.
+
+### 2026-11-03 bounded download and prompt fixes
+
+Enable five concurrent package transfers in the live pacman configuration before
+pacstrap, as well as in the target. Preserve signatures, timeout behavior and
+repository definitions. A bounded HTTPS connectivity check tries the official
+package mirror if the Arch homepage is unavailable. Required prompt cancellation
+must not select defaults silently; disk reselection uses a loop and cannot reach
+partitioning without explicit confirmation.
 
 Implement all the interactive installer steps: network setup, timezone/locale/keyboard selection, hostname/user creation, disk partitioning (automatic + manual), and base system installation via pacstrap. This is the largest phase -- the "meat" of the installer.
 

@@ -152,6 +152,7 @@ step_welcome() {
     tui_print "  - A disk to install to (will be formatted)"
     tui_print "  - x86_64 CPU, 4GB RAM minimum (8GB recommended)"
     tui_print "  - At least 26 GiB disk space, plus any swap"
+    tui_print "    Full application bundle: at least 33 GiB, plus any swap"
     tui_print "  - Secure Boot disabled; 64-bit UEFI or legacy BIOS"
     tui_print ""
 
@@ -191,8 +192,7 @@ step_timezone() {
 
     local selection
     selection=$(printf '%s\n' "${timezones[@]}" | tui_search "Timezone") || {
-        INSTALL_TIMEZONE="UTC"
-        return 0
+        cancel_installation
     }
 
     if [[ -n "$selection" ]] && [[ -f "/usr/share/zoneinfo/$selection" ]]; then
@@ -232,7 +232,7 @@ step_locale() {
     locale_list=$(list_utf8_locales "$gen")
 
     INSTALL_LOCALE=$(printf '%s\n' "$locale_list" | tui_search "Locale") || {
-        INSTALL_LOCALE="en_US.UTF-8"
+        cancel_installation
     }
 }
 
@@ -250,12 +250,12 @@ step_keyboard() {
     )
 
     local keymap
-    keymap=$(tui_menu "Select keyboard layout:" "${common[@]}") || keymap="us"
+    keymap=$(tui_menu "Select keyboard layout:" "${common[@]}") || cancel_installation
 
     if [[ "$keymap" == "[Show all layouts...]" ]]; then
         show_banner
         set_status "Keyboard Layout"
-        keymap=$(localectl list-keymaps 2>/dev/null | tui_search "Keyboard") || keymap="us"
+        keymap=$(localectl list-keymaps 2>/dev/null | tui_search "Keyboard") || cancel_installation
     fi
 
     INSTALL_KEYMAP="$keymap"
@@ -271,7 +271,7 @@ step_keyboard() {
         us|de|fr|es|it|ru|kr|pl|se|nl) INSTALL_XKB_LAYOUT="$keymap" ;;
         *)
             INSTALL_XKB_LAYOUT=$(localectl list-x11-keymap-layouts | tui_search "Desktop XKB layout") \
-                || INSTALL_XKB_LAYOUT=us
+                || cancel_installation
             ;;
     esac
 }
@@ -284,7 +284,7 @@ step_hostname() {
         show_banner
         set_status "Hostname"
 
-        INSTALL_HOSTNAME=$(tui_input "Hostname" "hyprflux")
+        INSTALL_HOSTNAME=$(tui_input "Hostname" "hyprflux") || cancel_installation
 
         # Strip leading/trailing whitespace (gum may add spaces)
         INSTALL_HOSTNAME="${INSTALL_HOSTNAME#"${INSTALL_HOSTNAME%%[![:space:]]*}"}"
@@ -309,7 +309,7 @@ step_user() {
         show_banner
         set_status "User Account"
 
-        INSTALL_USERNAME=$(tui_input "Username" "")
+        INSTALL_USERNAME=$(tui_input "Username" "") || cancel_installation
 
         if [[ -z "$INSTALL_USERNAME" ]]; then
             tui_error "Username cannot be empty."
@@ -329,8 +329,8 @@ step_user() {
         set_status "Set your password"
 
         local pass1 pass2
-        pass1=$(tui_password "Password")
-        pass2=$(tui_password "Confirm")
+        pass1=$(tui_password "Password") || cancel_installation
+        pass2=$(tui_password "Confirm") || cancel_installation
 
         if [[ "$pass1" == "$pass2" ]]; then
             if validate_password "$pass1"; then
@@ -400,6 +400,7 @@ step_review() {
 }
 
 step_disk_auto() {
+    INSTALL_RESELECT_DISK=false
     show_banner
     set_status "Disk Setup (Automatic)"
 
@@ -441,7 +442,7 @@ step_disk_auto() {
     printf '%s%sWARNING: The selected disk will be completely erased!%s\n\n' "$PAD" "${RED}" "${RESET}"
 
     local selection
-    selection=$(tui_menu "Select disk:" "${disk_list[@]}") || { step_disk; return; }
+    selection=$(tui_menu "Select disk:" "${disk_list[@]}") || { INSTALL_RESELECT_DISK=true; return 0; }
 
     INSTALL_DISK=$(printf '%s' "$selection" | awk '{print $1}')
 
@@ -450,10 +451,10 @@ step_disk_auto() {
     set_status "Confirm Disk"
     printf '%s%sAll data on %s will be destroyed!%s\n\n' "$PAD" "${RED}" "$INSTALL_DISK" "${RESET}"
     local confirm
-    confirm=$(tui_input "Type 'yes' to confirm" "")
+    confirm=$(tui_input "Type 'yes' to confirm" "") || { INSTALL_RESELECT_DISK=true; return 0; }
     if [[ "$confirm" != "yes" ]]; then
-        step_disk
-        return
+        INSTALL_RESELECT_DISK=true
+        return 0
     fi
 
     # Swap
@@ -467,7 +468,7 @@ step_disk_auto() {
         USE_SWAP=true
         # Validate: positive integer only (protects sgdisk from garbage input)
         while true; do
-            SWAP_SIZE=$(tui_input "Swap size (GB)" "4")
+            SWAP_SIZE=$(tui_input "Swap size (GB)" "4") || { INSTALL_RESELECT_DISK=true; return 0; }
             [[ -z "$SWAP_SIZE" ]] && SWAP_SIZE="4"
             if [[ "$SWAP_SIZE" =~ ^[1-9][0-9]{0,3}$ ]]; then
                 break
@@ -481,11 +482,12 @@ step_disk_auto() {
     part_prefix=$(get_part_prefix "$INSTALL_DISK")
 
     disk_is_installable "$INSTALL_DISK" || die "Disk is mounted, read-only, or contains live media: $INSTALL_DISK"
-    local disk_bytes swap_gib=0
+    local disk_bytes swap_gib=0 minimum_root_gib=25
+    [[ "$INSTALL_PROFILE" == full ]] && minimum_root_gib=32
     disk_bytes=$(blockdev --getsize64 "$INSTALL_DISK")
     [[ "$USE_SWAP" == true ]] && swap_gib=$((10#$SWAP_SIZE))
-    (( disk_bytes >= (25 + swap_gib + 1) * 1024 * 1024 * 1024 )) \
-        || die "Disk needs at least 26 GiB plus the requested swap space."
+    (( disk_bytes >= (minimum_root_gib + swap_gib + 1) * 1024 * 1024 * 1024 )) \
+        || die "Disk needs at least $((minimum_root_gib + 1)) GiB plus the requested swap space for this profile."
 
     start_progress "Partitioning ${INSTALL_DISK}..."
 
@@ -690,16 +692,22 @@ step_disk_manual() {
         fi
     fi
 
-    local available_bytes
+    local available_bytes minimum_root_gib=25
+    [[ "${INSTALL_PROFILE:-desktop}" == full ]] && minimum_root_gib=32
     available_bytes=$(df -B1 --output=avail "$MOUNT_POINT" | tail -1)
-    (( available_bytes >= 25 * 1024 * 1024 * 1024 )) || die "Root needs at least 25 GiB available."
+    (( available_bytes >= minimum_root_gib * 1024 * 1024 * 1024 )) || die "Root needs at least ${minimum_root_gib} GiB available for this profile."
 
     ROOT_PART=$(findmnt -n -o SOURCE --mountpoint "$MOUNT_POINT")
     [[ "$(findmnt -nro FSTYPE --mountpoint "$MOUNT_POINT")" == ext4 ]] \
         || die "Manual installation currently supports ext4 root only; encryption/RAID require extra boot configuration."
-    INSTALL_DISK=$(parent_disk "$ROOT_PART") || die "Cannot identify a single physical target disk."
+    [[ "$(lsblk -dnro TYPE "$ROOT_PART")" == part ]] \
+        || die "Root must be a plain disk partition; encrypted, LVM and RAID roots are not supported."
+    INSTALL_DISK=$(parent_disk "$ROOT_PART") || die "Unsupported root storage stack; use a plain partition on one physical disk."
     if [[ "$INSTALL_BOOT_MODE" == uefi ]]; then
         EFI_PART=$(findmnt -nro SOURCE --mountpoint "${MOUNT_POINT}/boot")
+        [[ "$(lsblk -dnro TYPE "$EFI_PART")" == part ]] \
+            || die "The EFI filesystem must be on a plain disk partition."
+        parent_disk "$EFI_PART" >/dev/null || die "Unsupported EFI storage stack."
         [[ "$(findmnt -nro FSTYPE --mountpoint "${MOUNT_POINT}/boot")" == vfat ]] \
             || die "The EFI partition must use FAT32 (vfat)."
     elif [[ "$(lsblk -dnro PTTYPE "$INSTALL_DISK")" == gpt ]]; then
@@ -711,28 +719,85 @@ step_disk_manual() {
 }
 
 step_disk() {
-    show_banner
-    set_status "Disk Setup"
+    while true; do
+        show_banner
+        set_status "Disk Setup"
 
-    local mode
-    mode=$(tui_menu "Disk Partitioning:" \
-        "Automatic (wipe entire disk)" \
-        "Manual (partition yourself)") || { log_warn "Installation cancelled."; exit 0; }
+        local mode
+        mode=$(tui_menu "Disk Partitioning:" \
+            "Automatic (wipe entire disk)" \
+            "Manual (partition yourself)") || cancel_installation
 
-    case "$mode" in
-        "Automatic"*)
-            step_disk_auto
-            ;;
-        "Manual"*)
-            step_disk_manual
-            ;;
-    esac
+        case "$mode" in
+            "Automatic"*)
+                step_disk_auto
+                if [[ "${INSTALL_RESELECT_DISK:-false}" == true ]]; then continue; fi
+                ;;
+            "Manual"*)
+                step_disk_manual
+                ;;
+            *) cancel_installation ;;
+        esac
+        return 0
+    done
 }
 
 # ============================================================================
 # Step 8: Install Base System (pacstrap)
 # ============================================================================
+confirm_install_clock() {
+    while [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" != yes ]]; do
+        show_banner
+        set_status "Check system date before installation"
+        tui_print "Current UTC time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        tui_print "Network time is not synchronized. Incorrect time breaks HTTPS and package signatures."
+        local choice
+        choice=$(tui_menu "Confirm the displayed date/time or correct it before any disk changes:" \
+            "Use displayed time (only if correct)" "Retry network time" \
+            "Open shell to correct time" "Cancel installation") || cancel_installation
+        case "$choice" in
+            "Use displayed"*) return 0 ;;
+            "Retry"*) timedatectl set-ntp true || true; tui_wait "Waiting for network time..." 5 ;;
+            "Open shell"*) bash || true ;;
+            *) cancel_installation ;;
+        esac
+    done
+}
+
+prepare_installation() {
+    INSTALL_PREFLIGHT_READY=false
+    confirm_install_clock
+    while true; do
+        start_progress "Checking package signing keys before disk setup..."
+        local ready=false
+        if configure_parallel_downloads /etc/pacman.conf >> "$PROGRESS_LOG" 2>&1 \
+            && refresh_mirrors >> "$PROGRESS_LOG" 2>&1 \
+            && timeout --kill-after=5s 125 systemctl start pacman-init.service >> "$PROGRESS_LOG" 2>&1 \
+            && timeout --kill-after=5s 180 pacman -Sy --needed --noconfirm archlinux-keyring >> "$PROGRESS_LOG" 2>&1; then
+            ready=true
+        fi
+        stop_progress
+        if [[ "$ready" == true ]]; then
+            INSTALL_PREFLIGHT_READY=true
+            return 0
+        fi
+        show_banner
+        log_warn "Signing-key preflight failed or timed out. No automatic disk changes have been made."
+        local choice
+        choice=$(tui_menu "Check connectivity and date/time. Logs: ${INSTALL_LOG_DIR:-/var/log/hyprflux-installer}" \
+            "Retry preflight" "Open shell" "Cancel installation") || cancel_installation
+        case "$choice" in
+            "Retry"*) confirm_install_clock ;;
+            "Open shell"*) bash || true; confirm_install_clock ;;
+            *) cancel_installation ;;
+        esac
+    done
+}
+
 step_base_install() {
+    [[ "${INSTALL_PREFLIGHT_READY:-false}" == true ]] || die "Package signing-key preflight must pass before disk setup."
+    local metrics_started=$SECONDS metrics_received
+    metrics_received=$(network_received_bytes)
     # Prepare mirror list and vconsole before starting progress
     mkdir -p "${MOUNT_POINT}/etc/pacman.d"
     printf 'KEYMAP=%s\n' "${INSTALL_KEYMAP}" > "${MOUNT_POINT}/etc/vconsole.conf"
@@ -761,19 +826,13 @@ step_base_install() {
     stop_progress
 
     # --- Phase 2: pacstrap with retries ---
-    systemctl start pacman-init.service || die "Live pacman keyring initialization failed."
-    start_progress "Refreshing Arch signing keys..."
-    if ! pacman -Sy --needed --noconfirm archlinux-keyring >> "$PROGRESS_LOG" 2>&1; then
-        stop_progress
-        die "Could not refresh Arch signing keys. Check connectivity and the system date."
-    fi
-    stop_progress
 
     # Seed the target cache, not the RAM-backed live overlay. This cache remains
     # available to pacstrap and all later upstream HyprFlux pacman transactions.
     start_progress "Preparing optional ISO package cache..."
     if ! python3 "${SCRIPT_DIR}/lib/package-cache.py" seed \
         /opt/hyprflux/package-cache "${MOUNT_POINT}/var/cache/pacman/pkg" \
+        --report "${MOUNT_POINT}/var/log/hyprflux-installer/package-cache-seed.json" \
         >> "$PROGRESS_LOG" 2>&1; then
         log_warn "Optional ISO package cache unavailable; packages will download normally."
     fi
@@ -836,6 +895,7 @@ step_base_install() {
         die "fstab generation produced an empty file — cannot continue."
     fi
     log_ok "Base system installed successfully."
+    record_install_metrics base "$metrics_started" "$metrics_received" || log_warn "Could not save base-install timing metrics."
     if [[ -s /var/log/hyprflux-hardware.json ]]; then
         mkdir -p "${MOUNT_POINT}/var/log/hyprflux"
         cp /var/log/hyprflux-hardware.json "${MOUNT_POINT}/var/log/hyprflux/live-hardware.json"
@@ -964,19 +1024,7 @@ step_configure_system() {
         # precedent (the live tooling already handles arbitrary IDs; the
         # fastfetch configs in the dots ship a custom HyprFlux logo).
         printf '==> Applying HyprFlux distribution branding\n'
-        cat > "${MOUNT_POINT}/etc/os-release" << 'OS_RELEASE_EOF'
-NAME="HyprFlux"
-PRETTY_NAME="HyprFlux Linux"
-ID=hyprflux
-BUILD_ID=rolling
-ANSI_COLOR="38;2;169;86;255"
-HOME_URL="https://github.com/ahmad9059/HyprFlux"
-DOCUMENTATION_URL="https://github.com/ahmad9059/HyprFlux"
-SUPPORT_URL="https://github.com/ahmad9059/HyprFlux/issues"
-BUG_REPORT_URL="https://github.com/ahmad9059/HyprFlux/issues"
-PRIVACY_POLICY_URL="https://github.com/ahmad9059/HyprFlux"
-LOGO=hyprflux-logo
-OS_RELEASE_EOF
+        write_os_release "$MOUNT_POINT"
         cat > "${MOUNT_POINT}/etc/lsb-release" << 'LSB_RELEASE_EOF'
 LSB_VERSION=1.4
 DISTRIB_ID=HyprFlux
@@ -1028,7 +1076,7 @@ LSB_RELEASE_EOF
         # Pacman enhancements
         printf '==> Configuring pacman\n'
         arch-chroot "$MOUNT_POINT" sed -i 's/^#Color/Color/' /etc/pacman.conf
-        arch-chroot "$MOUNT_POINT" sed -i 's/^#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf
+        configure_parallel_downloads "${MOUNT_POINT}/etc/pacman.conf"
         arch-chroot "$MOUNT_POINT" sed -i 's/^#VerbosePkgLists/VerbosePkgLists/' /etc/pacman.conf
         arch-chroot "$MOUNT_POINT" sed -i '/\[multilib\]/,/Include/{s/^#//}' /etc/pacman.conf
 
@@ -1123,6 +1171,8 @@ LSB_RELEASE_EOF
 # login to the desktop.
 # ============================================================================
 step_install_hyprflux() {
+    local metrics_started=$SECONDS metrics_received
+    metrics_received=$(network_received_bytes)
     local user_home="${MOUNT_POINT}/home/${INSTALL_USERNAME}"
     local wrapper_log="${user_home}/HyprFlux/logs/iso-wrapper.log"
 
@@ -1342,6 +1392,7 @@ Common causes:
 - initramfs missing disk modules   -> MODULES=(virtio_blk virtio_pci virtio_scsi nvme ahci) + mkinitcpio -P
 - root locked                      -> chroot: passwd root
 DEBUG_EOF
+    record_install_metrics desktop "$metrics_started" "$metrics_received" || log_warn "Could not save desktop-install timing metrics."
     tui_wait "" 1
 }
 
@@ -1421,6 +1472,7 @@ main() {
     step_graphics          # Hardware-specific driver choice before touching disk
     step_profile           # Required desktop vs extended application bundle
     step_review            # Confirm collected settings before destructive steps
+    prepare_installation   # Bounded signing-key/clock check BEFORE any automatic wipe
     step_disk              # Step 7
     step_base_install      # Step 8
     step_configure_system  # Step 9

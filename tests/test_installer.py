@@ -140,7 +140,7 @@ class InstallerTests(unittest.TestCase):
     def test_installed_profile_and_missing_application_report_are_explicit(self):
         script = (ROOT / "tests/guest-install.sh").read_text()
         start = script.index('[[ $(cat "$MOUNT_POINT/etc/hyprflux-install-profile")')
-        report = script[start:script.index('# Test-only autologin', start)]
+        report = script[start:script.index('# Full-profile package acceptance', start)]
         with tempfile.TemporaryDirectory(prefix="hyprflux-test-") as temp:
             root = Path(temp)
             (root / 'etc').mkdir()
@@ -198,10 +198,12 @@ class InstallerTests(unittest.TestCase):
         validation = manual[manual.index('    if ! mountpoint -q "$MOUNT_POINT";'):]
         baseline = dict(INSTALL_BOOT_MODE='uefi', ROOT_MOUNT='yes', EFI_MOUNT='yes',
                         ROOT_FS='ext4', EFI_FS='vfat', AVAILABLE='34359738368',
-                        SINGLE_DISK='yes', PTTYPE='gpt', BIOS_PART='yes')
+                         SINGLE_DISK='yes', PTTYPE='gpt', BIOS_PART='yes', ROOT_TYPE='part')
         cases = [({}, True), ({'ROOT_MOUNT': 'no'}, False),
                  ({'EFI_MOUNT': 'no'}, False), ({'AVAILABLE': '104857600'}, False),
                  ({'ROOT_FS': 'btrfs'}, False), ({'EFI_FS': 'ext4'}, False),
+                 ({'ROOT_TYPE': 'crypt'}, False), ({'ROOT_TYPE': 'lvm'}, False),
+                 ({'ROOT_TYPE': 'raid1'}, False),
                  ({'SINGLE_DISK': 'no'}, False),
                  ({'INSTALL_BOOT_MODE': 'bios'}, True),
                  ({'INSTALL_BOOT_MODE': 'bios', 'BIOS_PART': 'no'}, False),
@@ -221,7 +223,8 @@ class InstallerTests(unittest.TestCase):
             }
             parent_disk() { [[ $SINGLE_DISK == yes ]] || return 1; echo /dev/fake-disk; }
             lsblk() {
-                if [[ "$*" == *PTTYPE* ]]; then echo "$PTTYPE";
+                if [[ "$*" == '-dnro TYPE '* ]]; then echo "$ROOT_TYPE";
+                elif [[ "$*" == *PTTYPE* ]]; then echo "$PTTYPE";
                 elif [[ $BIOS_PART == yes ]]; then echo 21686148-6449-6e6f-744e-656564454649; fi
             }
             die() { echo "REJECTED: $*"; exit 1; }

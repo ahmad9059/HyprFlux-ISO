@@ -35,6 +35,17 @@ id "$TARGET_USER" >/dev/null || exit 1
 FAILED_COMPONENTS=()
 ISO_THEME_MODULE=""
 
+record_missing_applications() {
+    local report="$1"
+    shift
+    if (( $# )); then
+        mkdir -p "$(dirname "$report")"
+        printf '%s\n' "$@" > "$report"
+    else
+        rm -f -- "$report"
+    fi
+}
+
 # Always revoke temporary privileges, including on errors and interrupts.
 cleanup_wrapper() {
     rm -f /etc/sudoers.d/hyprflux-temp
@@ -464,11 +475,10 @@ for _aur_pkg in "${AUR_PACKAGES[@]}"; do
     AUR_MISSING+=("$_aur_pkg")
   fi
 done
+record_missing_applications /var/log/hyprflux-installer/missing-applications.txt "${AUR_MISSING[@]}"
 if [ ${#AUR_MISSING[@]} -gt 0 ]; then
   echo "    [WARN] AUR packages missing after Phase A: ${AUR_MISSING[*]}"
   echo "           Optional applications are recorded for manual recovery; no repeated hour-long build loops."
-  mkdir -p /var/log/hyprflux-installer
-  printf '%s\n' "${AUR_MISSING[@]}" > /var/log/hyprflux-installer/missing-applications.txt
   if [ ${#AUR_MISSING[@]} -gt 0 ]; then
     echo "    [WARN] AUR packages still missing: ${AUR_MISSING[*]}"
     echo "           After login: yay -S --needed <package>"

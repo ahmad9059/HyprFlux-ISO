@@ -128,8 +128,43 @@ checkout_matches_release() {
 # Check internet connectivity (returns 0 if online)
 # Check DNS, HTTPS and certificates, not ICMP (often blocked on usable networks).
 check_internet() {
-    curl --fail --silent --location --connect-timeout 5 --max-time 15 \
-        https://archlinux.org/ -o /dev/null
+    local endpoint
+    for endpoint in https://archlinux.org/ https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db; do
+        if curl --fail --silent --location --head --connect-timeout 4 --max-time 8 \
+            "$endpoint" -o /dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+cancel_installation() {
+    INSTALL_PASSWORD=""
+    show_banner
+    log_warn "Installation cancelled."
+    exit 0
+}
+
+network_received_bytes() {
+    local path value total=0
+    for path in /sys/class/net/*/statistics/rx_bytes; do
+        [[ "$path" == */lo/* ]] && continue
+        read -r value < "$path" 2>/dev/null || continue
+        [[ "$value" =~ ^[0-9]+$ ]] || continue
+        total=$((total + value))
+    done
+    printf '%s\n' "$total"
+}
+
+record_install_metrics() {
+    local stage="$1" started="$2" received_before="$3" received_after
+    received_after=$(network_received_bytes)
+    mkdir -p "$MOUNT_POINT/var/log/hyprflux-installer"
+    # Includes DNS/Git/NTP and other guest traffic, not just package payloads.
+    # Paired with the seed report, this supports honest future A/B comparisons.
+    printf '%s\telapsed_seconds=%s\tnetwork_rx_bytes=%s\n' "$stage" \
+        "$((SECONDS - started))" "$((received_after >= received_before ? received_after - received_before : 0))" \
+        >> "$MOUNT_POINT/var/log/hyprflux-installer/performance.tsv"
 }
 
 # Wait for internet with retries
@@ -212,27 +247,64 @@ get_part_prefix() {
 # and cannot represent device-mapper stacks. Reject mounted, read-only and
 # live-media disks before destructive operations.
 disk_is_installable() {
-    local disk="$1" source ancestor mountpoint
+    local disk="$1" source ancestor mountpoint mounts topology node kind ancestors
     [[ -b "$disk" ]] || return 1
     [[ "$(lsblk -dnro TYPE "$disk")" == disk ]] || return 1
     [[ "$(lsblk -dnro RO "$disk")" == 0 ]] || return 1
-    while IFS= read -r mountpoint; do
-        [[ -z "$mountpoint" ]] || return 1
-    done < <(lsblk -nr -o MOUNTPOINTS "$disk")
+    mounts=$(lsblk -nr -o MOUNTPOINTS "$disk") || return 1
+    [[ -z "${mounts//[[:space:]]/}" ]] || return 1
+    topology=$(lsblk -nrpo NAME,TYPE "$disk") || return 1
+    [[ -n "$topology" ]] || return 1
+    while read -r node kind; do
+        # Unmounted crypt/LVM/RAID holders are not an unused physical disk.
+        [[ -n "$node" && ( "$kind" == disk || "$kind" == part ) ]] || return 1
+    done <<< "$topology"
     for mountpoint in /run/archiso/bootmnt /run/archiso/img_dev; do
-        source=$(findmnt -nro SOURCE --mountpoint "$mountpoint" 2>/dev/null) || continue
+        if ! source=$(findmnt -nro SOURCE --mountpoint "$mountpoint" 2>/dev/null); then
+            # A mounted live filesystem that cannot be inspected is unsafe.
+            mountpoint -q "$mountpoint" && return 1
+            continue
+        fi
+        ancestors=$(lsblk -snrpo NAME "${source%%\[*}" 2>/dev/null) || return 1
+        [[ -n "$ancestors" ]] || return 1
         while IFS= read -r ancestor; do
             [[ "$ancestor" != "$disk" ]] || return 1
-        done < <(lsblk -snrpo NAME "$source" 2>/dev/null)
+        done <<< "$ancestors"
     done
     return 0
 }
 
 parent_disk() {
-    local source="${1%%\[*}" disks
-    disks=$(lsblk -snrpo NAME,TYPE "$source" | awk '$2 == "disk" {print $1}') || return 1
+    local source="${1%%\[*}" disks topology
+    topology=$(lsblk -snrpo NAME,TYPE "$source") || return 1
+    disks=$(awk '
+        $2 != "disk" && $2 != "part" { invalid=1 }
+        $2 == "disk" { print $1 }
+        END { if (invalid) exit 1 }
+    ' <<< "$topology") || return 1
     [[ -n "$disks" && "$disks" != *$'\n'* ]] || return 1
     printf '%s\n' "$disks"
+}
+
+write_os_release() {
+    local root="$1" temporary
+    temporary=$(mktemp "$root/etc/os-release.XXXXXX") || return 1
+    cat > "$temporary" <<'EOF'
+NAME="HyprFlux"
+PRETTY_NAME="HyprFlux Linux"
+ID=hyprflux
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;169;86;255"
+HOME_URL="https://github.com/ahmad9059/HyprFlux"
+DOCUMENTATION_URL="https://github.com/ahmad9059/HyprFlux"
+SUPPORT_URL="https://github.com/ahmad9059/HyprFlux/issues"
+BUG_REPORT_URL="https://github.com/ahmad9059/HyprFlux/issues"
+LOGO=hyprflux-logo
+EOF
+    chmod 644 "$temporary"
+    # Replace the /etc entry, never follow it into the package-owned vendor file.
+    mv -fT -- "$temporary" "$root/etc/os-release"
 }
 
 # List available disks (excluding loop, sr, ram devices)
@@ -245,6 +317,29 @@ list_disks() {
 # ============================================================================
 # Pacman Mirror Setup
 # ============================================================================
+
+# Pacstrap uses the LIVE pacman configuration; the build-time profile config
+# and later target configuration do not enable concurrent base downloads.
+# Change only this option, leaving signatures, repositories and timeouts intact.
+configure_parallel_downloads() {
+    local configuration="$1" candidate
+    candidate=$(mktemp "${configuration}.XXXXXX") || return 1
+    if awk '
+        function emit() {
+            if (options && !written) { print "ParallelDownloads = 5"; written=1 }
+        }
+        /^[[:space:]]*\[/ { emit(); options=($0 ~ /^[[:space:]]*\[options\][[:space:]]*$/) }
+        options && /^[[:space:]]*#?[[:space:]]*ParallelDownloads[[:space:]]*=/ { next }
+        { print }
+        END { emit(); if (!written) exit 1 }
+    ' "$configuration" > "$candidate"; then
+        chmod --reference="$configuration" "$candidate" \
+            && mv -f -- "$candidate" "$configuration" || { rm -f -- "$candidate"; return 1; }
+    else
+        rm -f -- "$candidate"
+        return 1
+    fi
+}
 
 # Use reflector to get fast mirrors (run in live env before pacstrap)
 setup_mirrors() {

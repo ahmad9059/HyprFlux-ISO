@@ -2,6 +2,14 @@
 
 ## Goal
 
+### 2026-11-03 cancellation amendment
+
+Submitting a blank text field may accept its displayed default; cancelling must
+return a failure status instead. Required configuration prompts handle that
+status as a clean cancellation, not a silent fallback or an installation error.
+Disk selection/wipe/swap input cancellation returns to the partition-mode menu
+before destructive operations. Use an iterative menu, not recursive step calls.
+
 Create the visual framework for the HyprFlux installer: the large ASCII art banner, the scrolling output area, color scheme, auto-launch mechanism, and the shared library functions used by all installer steps. This is the "chrome" that makes the installer look like Omarchy (reference image).
 
 After this phase, booting the ISO should display the big HyprFlux logo with a status area below it, before handing off to Phase 4's installation logic.

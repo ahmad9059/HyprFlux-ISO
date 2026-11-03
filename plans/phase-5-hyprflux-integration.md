@@ -2,6 +2,14 @@
 
 ## Goal
 
+### Audit-fix amendment (2026-11-03)
+
+A successful Full recovery removes stale missing-application warnings. Evaluate
+official Waybar functionally before replacing `waybar-git`: the pinned HyprFlux
+Lua setup requires Lua workspace dispatch, not just a rendered bar. Source
+comparison shows stable 0.15.0 sends legacy dispatch packets; collect runtime
+protocol evidence and retain the known-working package until compatible.
+
 Wire up the HyprFlux, base-installer (was Arch-Hyprland), and base-dots (was Hyprland-Dots) installation pipeline to run inside the chroot after the base system is configured. This is the phase that turns a plain Arch install into a fully configured HyprFlux Hyprland desktop.
 
 After this phase, the full installer is complete: boot ISO -> answer prompts -> reboot into a working HyprFlux desktop.

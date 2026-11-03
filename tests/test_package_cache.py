@@ -88,6 +88,35 @@ class PackageCacheTests(unittest.TestCase):
         self.cache.seed(self.root / 'absent', self.target, 0)
         self.assertFalse(self.target.exists())
 
+    def test_curation_excludes_stale_versions_and_foreign_architectures(self):
+        for name in ('linux-0.9-1-x86_64.pkg.tar.zst', 'linux-9.0-1-aarch64.pkg.tar.zst'):
+            (self.source / name).write_bytes(b'old or foreign')
+            (self.source / (name + '.sig')).write_bytes(b'signature')
+        self.cache.stage(self.source, self.staged, 1024, {'linux': '1.0-1'})
+        names = [row['name'] for row in json.loads((self.staged / 'manifest.json').read_text())['files']]
+        self.assertEqual(set(names), {self.name, self.name + '.sig'})
+
+    def test_base_packages_win_over_alphabetical_cache_entries(self):
+        name = 'aaa-1-1-any.pkg.tar.zst'
+        (self.source / name).write_bytes(b'fixture package')
+        (self.source / (name + '.sig')).write_bytes(b'fixture signature')
+        needed = sum(p.stat().st_size for p in self.source.iterdir() if p.name.startswith('linux-'))
+        self.cache.stage(self.source, self.staged, needed, {'linux': '1.0-1', 'aaa': '1-1'})
+        self.assertTrue((self.staged / self.name).exists())
+        self.assertFalse((self.staged / name).exists())
+
+    def test_seed_metrics_report_bytes_and_do_not_claim_network_savings(self):
+        import json
+        self.stage()
+        report = self.root / 'metrics.json'
+        self.cache.seed(self.staged, self.target, 0, report)
+        result = json.loads(report.read_text())
+        self.assertEqual(result['copied_pairs'], 1)
+        self.assertEqual(result['copied_bytes'], 32)
+        self.assertNotIn('network_bytes_saved', result)
+        self.cache.seed(self.root / 'absent', self.target, 0, report)
+        self.assertEqual(json.loads(report.read_text())['copied_pairs'], 0)
+
     def test_build_preserves_previous_images_and_uses_staged_profile(self):
         script = (ROOT / 'build.sh').read_text()
         self.assertNotIn('rm -rf "${WORK_DIR}" "${OUT_DIR}"', script)

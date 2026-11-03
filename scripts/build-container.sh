@@ -15,6 +15,7 @@ docker build --pull -t hyprflux-iso-builder - < "$ROOT/tests/Dockerfile.builder"
 docker run --rm --privileged \
     -e "HYPRFLUX_PACKAGE_CACHE=$cache_source" \
     -e "HYPRFLUX_CACHE_LIMIT_MIB=${HYPRFLUX_CACHE_LIMIT_MIB:-2048}" \
+    -e "HYPRFLUX_COMPRESSION=${HYPRFLUX_COMPRESSION:-xz}" \
     -v "$ROOT:/project" \
     -v hyprflux-pacman-cache:/var/cache/pacman/pkg \
     hyprflux-iso-builder bash -c \
