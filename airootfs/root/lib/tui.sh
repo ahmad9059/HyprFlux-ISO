@@ -10,9 +10,10 @@
 # This prevents the blinking cursor at column 0 on status screens.
 #
 # Long operations (pacstrap, git clone): output goes to a log file.
-# A background monitor periodically redraws the ENTIRE screen (banner +
-# status + last N log lines). No cursor save/restore -- just full redraws.
-# This eliminates flashing/blinking artifacts completely.
+# A monitor updates only the status/log region. The cyan header stays static
+# except on resize. Presentation reference: Omarchy classic installer, commit
+# b45e8464ef4cc094d6edec46faa2a3632a462dd4; MIT attribution is installed at
+# /usr/share/licenses/hyprflux-iso/omarchy-ui-MIT.txt.
 # ============================================================================
 
 [[ -n "${_TUI_SH_LOADED:-}" ]] && return 0
@@ -41,6 +42,17 @@ readonly CYAN=$'\033[0;36m'
 readonly DIM=$'\033[2m'
 readonly GRAY=$'\033[90m'
 readonly WHITE=$'\033[1;37m'
+readonly -a TUI_SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
+_spinner_frames() {
+  local terminal
+  terminal=$(tty 2>/dev/null) || terminal=""
+  case "$terminal" in
+    # Linux's default console font does not contain Gum's Braille dot glyphs.
+    /dev/tty[0-9]*|/dev/console) printf '%s\n' '|' '/' '-' '\' ;;
+    *) printf '%s\n' "${TUI_SPINNER_FRAMES[@]}" ;;
+  esac
+}
 
 # ============================================================================
 # Layout
@@ -49,21 +61,31 @@ TERM_WIDTH=0
 TERM_HEIGHT=0
 PADDING_LEFT=0
 PAD=""
+BANNER_HEIGHT=8
+TUI_CONTENT_ROWS=0
+_BANNER_SIZE=""
 
 # The banner is exactly 66 display-columns wide.
 readonly LOGO_DISPLAY_WIDTH=66
 
 _compute_layout() {
   local size
-  size=$(stty size 2>/dev/null </dev/tty) || size="40 120"
+  size=$(stty size 2>/dev/null </dev/tty) || size="24 80"
   TERM_HEIGHT=${size%% *}
   TERM_WIDTH=${size##* }
-  : "${TERM_WIDTH:=120}"
-  : "${TERM_HEIGHT:=40}"
+  [[ "$TERM_WIDTH" =~ ^[0-9]+$ ]] && (( TERM_WIDTH > 0 )) || TERM_WIDTH=80
+  [[ "$TERM_HEIGHT" =~ ^[0-9]+$ ]] && (( TERM_HEIGHT > 0 )) || TERM_HEIGHT=24
 
   PADDING_LEFT=$(( (TERM_WIDTH - LOGO_DISPLAY_WIDTH) / 2 ))
   (( PADDING_LEFT < 0 )) && PADDING_LEFT=0
   PAD=$(printf "%*s" "$PADDING_LEFT" "")
+}
+
+_available_height() {
+  local height=$(( TERM_HEIGHT - BANNER_HEIGHT - TUI_CONTENT_ROWS - 3 ))
+  (( height > $1 )) && height=$1
+  (( height < 1 )) && height=1
+  printf '%s' "$height"
 }
 
 # ============================================================================
@@ -87,6 +109,15 @@ _build_banner_cache() {
   local buf=""
   buf+=$'\n'
 
+  if (( TERM_WIDTH < LOGO_DISPLAY_WIDTH || TERM_HEIGHT < 20 )); then
+    BANNER_HEIGHT=3
+    buf+="${PAD}${LOGO_COLOR}HyprFlux${RESET}"$'\n\n'
+    _BANNER_CACHE="$buf"
+    _BANNER_SIZE="$TERM_HEIGHT $TERM_WIDTH"
+    return 0
+  fi
+  BANNER_HEIGHT=8
+
   # Logo
   buf+="${LOGO_COLOR}"
   while IFS= read -r line; do
@@ -101,42 +132,25 @@ _build_banner_cache() {
 LOGO
   buf+="${RESET}"
 
-  # Separator
-  local name="ahmad9059"
-  local dashes=$(( LOGO_DISPLAY_WIDTH - 2 - ${#name} ))
-  local left=$(( dashes / 2 ))
-  local right=$(( dashes - left ))
-  buf+="${PAD}${SEPARATOR_COLOR}✻"
-  local i
-  for (( i = 0; i < left; i++ )); do buf+="─"; done
-  buf+="${name}"
-  for (( i = 0; i < right; i++ )); do buf+="─"; done
-  buf+="✻${RESET}"$'\n'
-
-  # Welcome
-  local welcome="Welcome to HyprFlux! lets begin Installation"
-  local wpad=$(( (LOGO_DISPLAY_WIDTH - ${#welcome}) / 2 ))
-  (( wpad < 0 )) && wpad=0
-  local wpad_str
-  wpad_str=$(printf "%*s" "$wpad" "")
-  buf+="${PAD}${WELCOME_COLOR}${wpad_str}${welcome}${RESET}"$'\n'
   buf+=$'\n'
 
   _BANNER_CACHE="$buf"
+  _BANNER_SIZE="$TERM_HEIGHT $TERM_WIDTH"
 }
 
 # ============================================================================
-# Show Banner (clear + centered logo + separator + welcome)
+# Show Banner (clear + centered HyprFlux cyan wordmark)
 # Cursor is HIDDEN after this call. Interactive prompts re-show it.
 # ============================================================================
 show_banner() {
   _compute_layout
-  if [[ -z "$_BANNER_CACHE" ]]; then
+  if [[ -z "$_BANNER_CACHE" || "$_BANNER_SIZE" != "$TERM_HEIGHT $TERM_WIDTH" ]]; then
     _build_banner_cache
   fi
   printf '%s' "${ANSI_HIDE_CURSOR}"
   printf '%s' "${ANSI_CLEAR_SCREEN}"
   printf '%s' "$_BANNER_CACHE"
+  TUI_CONTENT_ROWS=0
 }
 
 # ============================================================================
@@ -144,6 +158,7 @@ show_banner() {
 # ============================================================================
 set_status() {
   printf '%s%s%s%s\n\n' "$PAD" "${STATUS_COLOR}" "$1" "${RESET}"
+  TUI_CONTENT_ROWS=$((TUI_CONTENT_ROWS + 2))
 }
 
 # ============================================================================
@@ -151,10 +166,16 @@ set_status() {
 # ============================================================================
 tui_print() {
   printf '%s%s\n' "$PAD" "$*"
+  local text="$*"
+  local width=$((TERM_WIDTH - PADDING_LEFT))
+  (( width < 1 )) && width=1
+  TUI_CONTENT_ROWS=$((TUI_CONTENT_ROWS + (${#text} + width - 1) / width))
+  [[ -n "$*" ]] || TUI_CONTENT_ROWS=$((TUI_CONTENT_ROWS + 1))
 }
 
 tui_print_bold() {
   printf '%s%s%s%s\n' "$PAD" "${WHITE}" "$*" "${RESET}"
+  TUI_CONTENT_ROWS=$((TUI_CONTENT_ROWS + 1))
 }
 
 # ============================================================================
@@ -182,7 +203,8 @@ tui_spinner() {
   local msg="$1"; shift
 
   # ASCII spinner -- avoids UTF-8 issues in early console
-  local -a spin=('/' '-' '\' '|')
+  local -a spin=()
+  mapfile -t spin < <(_spinner_frames)
   local spin_idx=0
 
   # Run command in background
@@ -193,7 +215,7 @@ tui_spinner() {
   while kill -0 "$cmd_pid" 2>/dev/null; do
     local frame="${spin[$spin_idx]}"
     spin_idx=$(( (spin_idx + 1) % ${#spin[@]} ))
-    printf '\r%s%s[%s] %s%s' "$PAD" "${STATUS_COLOR}" "$frame" "$msg" "${RESET}"
+    printf '\r%s%s%s %s%s' "$PAD" "${STATUS_COLOR}" "$frame" "$msg" "${RESET}"
     sleep 0.1
   done
 
@@ -223,14 +245,15 @@ tui_wait() {
   local secs="${2:-3}"
 
   # ASCII spinner -- avoids UTF-8 issues in early console
-  local -a spin=('/' '-' '\' '|')
+  local -a spin=()
+  mapfile -t spin < <(_spinner_frames)
   local spin_idx=0
   local end_time=$(( SECONDS + secs ))
 
   while (( SECONDS < end_time )); do
     local frame="${spin[$spin_idx]}"
     spin_idx=$(( (spin_idx + 1) % ${#spin[@]} ))
-    printf '\r%s%s[%s] %s%s' "$PAD" "${STATUS_COLOR}" "$frame" "$msg" "${RESET}"
+    printf '\r%s%s%s %s%s' "$PAD" "${STATUS_COLOR}" "$frame" "$msg" "${RESET}"
     sleep 0.1
   done
 
@@ -246,13 +269,12 @@ tui_wait() {
 #   2. Run your command with output >> "$PROGRESS_LOG" 2>&1
 #   3. Call stop_progress
 #
-# While running, a background process redraws the entire screen every 0.5s:
+# While running, a background process updates the dynamic region every 0.1s:
 #   [banner]
 #   [status message with spinner]
 #   [last N lines of log, truncated to fit]
 #
-# This uses full-screen redraws (clear + print) instead of cursor
-# save/restore, which eliminates all flashing/blinking artifacts.
+# The header remains static except on resize; each dynamic frame is buffered.
 # The background process is killed cleanly by stop_progress.
 # ============================================================================
 PROGRESS_LOG=""
@@ -260,6 +282,7 @@ _PROGRESS_PID=""
 _PROGRESS_STATUS=""
 
 start_progress() {
+  stop_progress
   local status_msg="${1:-Installing...}"
   _PROGRESS_STATUS="$status_msg"
 
@@ -271,9 +294,7 @@ start_progress() {
   printf '==> %s\n' "$status_msg" >> "$PROGRESS_LOG"
 
   # Ensure banner cache exists
-  if [[ -z "$_BANNER_CACHE" ]]; then
-    _build_banner_cache
-  fi
+  _build_banner_cache
 
   # Hide cursor, clear screen once, draw banner once.
   # The background loop then updates only the status + log region in-place.
@@ -284,33 +305,48 @@ start_progress() {
   # Start background in-place update loop
   _progress_loop &
   _PROGRESS_PID=$!
-  disown "$_PROGRESS_PID" 2>/dev/null || true
 }
 
 _progress_loop() {
   # --- Layout ---
-  local log_start_row=13
+  local log_start_row=$((BANNER_HEIGHT + 3))
   local max_lines=$(( TERM_HEIGHT - log_start_row ))
-  (( max_lines < 3 )) && max_lines=3
-  (( max_lines > 25 )) && max_lines=25
+  (( max_lines < 1 )) && max_lines=1
+  (( max_lines > 20 )) && max_lines=20
 
-  # Hard cap: log text is max 58 chars. With "  > " prefix (4 chars) = 62.
-  # Together with $PAD (centering), the total line stays within banner width.
-  local -i max_w=58
+  # Keep the dim arrow-prefixed log inside the wordmark/terminal width.
+  local -i max_w=$((TERM_WIDTH - PADDING_LEFT - 4))
+  (( max_w > LOGO_DISPLAY_WIDTH - 4 )) && max_w=$((LOGO_DISPLAY_WIDTH - 4))
+  (( max_w < 1 )) && max_w=1
 
   local erase_eol=$'\033[K'
-  local -a spin=('/' '-' '\' '|')
+  local -a spin=()
+  mapfile -t spin < <(_spinner_frames)
   local spin_idx=0
+  local controls=$'[\001-\037\177]'
 
   while true; do
-    # --- Status line (row 11) ---
-    printf '\033[11;1H%s' "$erase_eol"
+    _compute_layout
+    if [[ "$_BANNER_SIZE" != "$TERM_HEIGHT $TERM_WIDTH" ]]; then
+      _build_banner_cache
+      printf '%s%s' "$ANSI_CLEAR_SCREEN" "$_BANNER_CACHE"
+      log_start_row=$((BANNER_HEIGHT + 3))
+      max_lines=$((TERM_HEIGHT - log_start_row))
+      (( max_lines < 1 )) && max_lines=1
+      (( max_lines > 20 )) && max_lines=20
+      max_w=$((TERM_WIDTH - PADDING_LEFT - 4))
+      (( max_w > LOGO_DISPLAY_WIDTH - 4 )) && max_w=$((LOGO_DISPLAY_WIDTH - 4))
+      (( max_w < 1 )) && max_w=1
+    fi
+    local output="" position=""
+    printf -v output '\033[%d;1H%s' "$((BANNER_HEIGHT + 1))" "$erase_eol"
     local frame="${spin[$spin_idx]}"
     spin_idx=$(( (spin_idx + 1) % ${#spin[@]} ))
-    printf '%s%s[%s] %s%s' "$PAD" "${STATUS_COLOR}" "$frame" "$_PROGRESS_STATUS" "${RESET}"
+    output+="${PAD}${STATUS_COLOR}${frame} ${_PROGRESS_STATUS:0:max_w}${RESET}"
 
     # --- Log region (rows 13+) ---
-    printf '\033[%d;1H' "$log_start_row"
+    printf -v position '\033[%d;1H' "$log_start_row"
+    output+="$position"
 
     local lines_printed=0
 
@@ -346,6 +382,7 @@ _progress_loop() {
           fi
         done
         stripped+="$rest"
+        stripped="${stripped//$controls/}"
 
         # Skip blank lines
         [[ -z "${stripped}" || -z "${stripped// /}" ]] && continue
@@ -356,7 +393,7 @@ _progress_loop() {
         fi
 
         # Print: erase line + padded output
-        printf '%s%s%s  > %s%s\n' "$erase_eol" "$PAD" "${GRAY}" "$stripped" "${RESET}"
+        output+="${erase_eol}${PAD}${GRAY}  → ${stripped}${RESET}"$'\n'
         lines_printed=$(( lines_printed + 1 ))
         (( lines_printed >= max_lines )) && break
       done
@@ -366,10 +403,11 @@ _progress_loop() {
     local remaining=$(( max_lines - lines_printed ))
     local j
     for (( j = 0; j < remaining; j++ )); do
-      printf '%s\n' "$erase_eol"
+      output+="${erase_eol}"$'\n'
     done
 
-    sleep 0.5
+    printf '%s' "$output"
+    sleep 0.1
   done
 }
 
@@ -449,7 +487,7 @@ tui_menu() {
     --cursor.foreground="212" \
     --selected.foreground="212" \
     --unselected-prefix="${PAD}  " \
-    --height=15 \
+    --height="$(_available_height 15)" \
     --no-show-help \
     2>/dev/tty) || { printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty; return 1; }
   printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty
@@ -475,7 +513,7 @@ tui_yesno() {
     --cursor.foreground="212" \
     --selected.foreground="212" \
     --unselected-prefix="${PAD}  " \
-    --height=4 \
+    --height="$(_available_height 4)" \
     --no-show-help \
     2>/dev/tty) || { printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty; return 1; }
   printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty
@@ -546,7 +584,7 @@ tui_search() {
     --indicator.foreground="212" \
     --match.foreground="212" \
     --cursor-text.foreground="255" \
-    --height=20 \
+    --height="$(_available_height 20)" \
     --no-show-help \
     --placeholder="type to search..." \
     2>/dev/tty) || { printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty; return 1; }
@@ -567,7 +605,7 @@ tui_multiselect() {
     --cursor.foreground="212" \
     --selected.foreground="212" \
     --unselected-prefix="${PAD}  " \
-    --height=20 \
+    --height="$(_available_height 20)" \
     --no-show-help \
     2>/dev/tty) || { printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty; return 1; }
   printf '%s' "${ANSI_HIDE_CURSOR}" >/dev/tty

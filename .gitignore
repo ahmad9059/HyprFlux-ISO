@@ -4,7 +4,7 @@ references/
 # Build artifacts
 work/
 .hyprflux-build.lock
-out/
+out
 *.iso
 *.sha256
 
@@ -33,9 +33,10 @@ skills-lock.json
 /tmp/hyprflux-*.qcow2
 /tmp/hyprflux-*.fd
 hyprflux-test-disk.qcow2
+*.qcow2
 *.qcow2.ovmf-vars.fd
 *.qcow2.lock
 # Local disposable QEMU regression states and extracted kernels
-.qemu-tests/
+.qemu-tests
 .test-tools/
 __pycache__/

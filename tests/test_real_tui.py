@@ -17,11 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(shutil.which('gum'), 'Optional: install gum in the test container for real PTY checks')
 class RealInputTests(unittest.TestCase):
-    def prompt(self, key):
+    def prompt(self, key, script=None, rows=40, columns=120, ready=b'Hostname'):
         child, terminal = pty.fork()
         if child == 0:
             os.chdir(ROOT)
-            script = '''source airootfs/root/lib/tui.sh
+            script = script or '''source airootfs/root/lib/tui.sh
                 if value=$(tui_input Hostname hyprflux); then status=0; else status=$?; fi
                 printf '\\nPROMPT_RESULT=%s;STATUS=%s\\n' "$value" "$status"
             '''
@@ -29,7 +29,7 @@ class RealInputTests(unittest.TestCase):
         output = bytearray()
         sent = False
         status = None
-        fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
+        fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
         try:
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
@@ -46,7 +46,7 @@ class RealInputTests(unittest.TestCase):
                     output.extend(data)
                     if b'\x1b[6n' in data:
                         os.write(terminal, b'\x1b[1;1R')
-                    if not sent and b'Hostname' in output:
+                    if not sent and ready in output:
                         os.write(terminal, key)
                         sent = True
                 if not readable:
@@ -74,6 +74,26 @@ class RealInputTests(unittest.TestCase):
 
     def test_enter_explicitly_accepts_default(self):
         self.assertIn(b'PROMPT_RESULT=hyprflux;STATUS=0', self.prompt(b'\r'))
+
+    def test_real_menu_at_80_columns(self):
+        script = '''source airootfs/root/lib/tui.sh
+            show_banner
+            set_status 'Application profile'
+            if value=$(tui_menu 'Choose profile' Desktop 'Full application bundle'); then status=0; else status=$?; fi
+            printf '\\nPROMPT_RESULT=%s;STATUS=%s\\n' "$value" "$status"
+        '''
+        output = self.prompt(b'\r', script, rows=24, columns=80, ready=b'Choose profile')
+        self.assertIn(b'PROMPT_RESULT=Desktop;STATUS=0', output)
+
+    def test_real_filter_on_compact_terminal(self):
+        script = '''source airootfs/root/lib/tui.sh
+            show_banner
+            set_status Timezone
+            if value=$(printf 'UTC\\nEurope/London\\n' | tui_search Zone); then status=0; else status=$?; fi
+            printf '\\nPROMPT_RESULT=%s;STATUS=%s\\n' "$value" "$status"
+        '''
+        output = self.prompt(b'\r', script, rows=16, columns=60, ready=b'Zone')
+        self.assertIn(b'PROMPT_RESULT=UTC;STATUS=0', output)
 
 
 if __name__ == '__main__':

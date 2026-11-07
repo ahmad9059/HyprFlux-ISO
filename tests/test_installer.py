@@ -69,11 +69,19 @@ class InstallerTests(unittest.TestCase):
             rows = module.recorded_results(base, 'expected')
             self.assertEqual(len(rows), 2)
             self.assertEqual(sum(row['boot_pass'] for row in rows), 1)
-            self.assertEqual(len(module.missing_cases(rows)), 4)
+            self.assertEqual(len(module.missing_cases(rows)), 5)
+            self.assertIn(dict(profile='full', firmware='bios', layout='automatic'),
+                          module.missing_cases(rows))
             good = base / 'good'
             (good / 'serial.log').write_text('echo HYPRFLUX_TEST_BOOT_PASS\n')
             self.assertFalse(any(row['boot_pass'] for row in module.recorded_results(base, 'expected')))
             (good / 'serial.log').write_text('\nHYPRFLUX_TEST_BOOT_PASS\n')
+            metadata = json.loads((good / 'machine.json').read_text())
+            metadata['maintenance_test'] = True
+            (good / 'machine.json').write_text(json.dumps(metadata))
+            self.assertFalse(any(row['boot_pass'] for row in module.recorded_results(base, 'expected')))
+            metadata['maintenance_test'] = False
+            (good / 'machine.json').write_text(json.dumps(metadata))
             (good / 'desktop.png').unlink()
             self.assertFalse(any(row['boot_pass'] for row in module.recorded_results(base, 'expected')))
 
@@ -88,8 +96,9 @@ class InstallerTests(unittest.TestCase):
                 TARGET_HOME={temp!r}
                 ARCH_HYPR_DIR={temp!r}
                 TARGET_USER=fixture
+                INSTALL_PROFILE=desktop
                 FAILED_COMPONENTS=()
-                timeout() {{ shift 2; "$@"; }}
+                run_stage() {{ shift; "$@"; }}
                 su() {{ bash -c "${{@: -1}}"; }}
                 run_as_user {str(script)!r}
                 [[ ${{#FAILED_COMPONENTS[@]}} == 0 ]]
@@ -115,27 +124,12 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(original['embedded'])
         self.assertEqual(original['profile'], 'desktop')
 
-    def test_theme_module_keeps_repo_intact_and_installs_icons_without_aur_helper(self):
+    def test_theme_module_runs_upstream_without_iso_rewriting(self):
         wrapper = (ROOT / "airootfs/root/lib/hyprflux-chroot-wrapper.sh").read_text()
-        prepare = "prepare_iso_theme_module() {" + wrapper.split("prepare_iso_theme_module() {", 1)[1].split("\n}", 1)[0] + "\n}"
-        with tempfile.TemporaryDirectory(prefix="hyprflux-test-") as temp:
-            source = Path(temp) / '04-themes.sh'
-            adapted = Path(temp) / 'adapted.sh'
-            original = 'if sudo pacman -S --needed --noconfirm papirus-icon-theme papirus-folders; then echo ICONS_INSTALLED; else exit 17; fi\n'
-            source.write_text(original)
-            self.check_bash(prepare + f'\nprepare_iso_theme_module {str(source)!r} {str(adapted)!r}')
-            self.assertEqual(source.read_text(), original)
-            self.assertEqual(adapted.stat().st_mode & 0o777, 0o644)
-            result = bash(f'''
-                sudo() {{ "$@"; }}
-                pacman() {{ [[ "$*" == '-S --needed --noconfirm papirus-icon-theme' ]]; }}
-                source {str(adapted)!r}
-            ''')
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('ICONS_INSTALLED', result.stdout)
-            source.write_text('unexpected upstream command\n')
-            result = bash(prepare + f'\nprepare_iso_theme_module {str(source)!r} {str(adapted)!r}')
-            self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('prepare_iso_theme_module', wrapper)
+        self.assertNotIn('ISO_THEME_MODULE', wrapper)
+        self.assertIn('module_script="$module"', wrapper)
+        self.assertIn('source \\"${module_script}\\"', wrapper)
 
     def test_installed_profile_and_missing_application_report_are_explicit(self):
         script = (ROOT / "tests/guest-install.sh").read_text()
@@ -259,10 +253,10 @@ class InstallerTests(unittest.TestCase):
             result = bash(verify + f'\nassert_installer_cleanup {temp!r}')
             self.assertNotEqual(result.returncode, 0)
 
-    def test_waybar_hwmon_comma_is_repaired_and_other_parse_errors_fail(self):
+    def test_waybar_validation_rejects_errors_without_rewriting_source(self):
         import json
         wrapper = (ROOT / "airootfs/root/lib/hyprflux-chroot-wrapper.sh").read_text()
-        normalize = "normalize_and_validate_waybar() {" + wrapper.split("normalize_and_validate_waybar() {", 1)[1].split("\n}\n", 1)[0] + "\n}"
+        validate = "validate_waybar() {" + wrapper.split("validate_waybar() {", 1)[1].split("\n}\n", 1)[0] + "\n}"
         with tempfile.TemporaryDirectory(prefix="hyprflux-test-") as temp:
             directory = Path(temp)
             # Pure-JSON fixture and a stdlib shim keep root-free checks free of
@@ -274,11 +268,16 @@ class InstallerTests(unittest.TestCase):
             modules.write_text('{"temperature": {\n "hwmon-path": [ "/sys/test" ]\n "interval": 10\n}}\n')
             with self.assertRaises(json.JSONDecodeError):
                 json.loads(modules.read_text())
-            prefix = normalize + f'\nexport PYTHONPATH={temp!r}; python() {{ python3 "$@"; }}; '
-            self.check_bash(prefix + f'normalize_and_validate_waybar {temp!r}')
+            prefix = validate + f'\nexport PYTHONPATH={temp!r}; python() {{ python3 "$@"; }}; '
+            original = modules.read_bytes()
+            result = bash(prefix + f'validate_waybar {temp!r}')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(modules.read_bytes(), original)
+            modules.write_text('{"temperature": {"hwmon-path": ["/sys/test"], "interval": 10}}\n')
+            self.check_bash(prefix + f'validate_waybar {temp!r}')
             self.assertEqual(json.loads(modules.read_text())['temperature']['hwmon-path'], ['/sys/test'])
             (directory / 'UserModules').write_text('{ broken syntax }')
-            result = bash(prefix + f'normalize_and_validate_waybar {temp!r}')
+            result = bash(prefix + f'validate_waybar {temp!r}')
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('UserModules', result.stderr)
 
@@ -356,24 +355,15 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn('SOURCE /root/hyprflux-test/hyprflux-install.sh', result.stdout)
                 self.assertIn('COPY', result.stdout)
 
-    def test_only_redundant_deprecated_workspace_scale_is_removed(self):
+    def test_iso_does_not_rewrite_upstream_workspace_scale(self):
         wrapper = (ROOT / "airootfs/root/lib/hyprflux-chroot-wrapper.sh").read_text()
-        normalize = "normalize_hyprland_defaults() {" + wrapper.split("normalize_hyprland_defaults() {", 1)[1].split("\n}", 1)[0] + "\n}"
-        with tempfile.TemporaryDirectory(prefix="hyprflux-test-") as temp:
-            settings = Path(temp) / "user-settings.lua"
-            settings.write_text('hl.config({\n    dwindle = {\n        special_scale_factor = 1,\n        special_scale_factor = 1.0, -- default\n        special_scale_factor = 0.8,\n        special_scale_factor = 1.25,\n        preserve_split = true,\n    },\n})\n')
-            self.check_bash(normalize + f'\nnormalize_hyprland_defaults {str(settings)!r}')
-            result = settings.read_text()
-            self.assertNotIn('special_scale_factor = 1,', result)
-            self.assertNotIn('special_scale_factor = 1.0,', result)
-            self.assertIn('special_scale_factor = 0.8,', result)
-            self.assertIn('special_scale_factor = 1.25,', result)
-            self.assertIn('preserve_split = true,', result)
+        self.assertNotIn('normalize_hyprland_defaults', wrapper)
+        self.assertNotIn('special_scale_factor', wrapper)
 
     def test_wayland_capture_selects_socket_not_lock_or_unrelated_mount(self):
         import socket
         script = (ROOT / "tests/guest-verify.sh").read_text()
-        select = script[script.index('wayland_socket=""'):script.index('capture_dir=$(mktemp')]
+        select = script[script.index('wayland_socket=""'):script.index('source /root/guest-desktop-checks.sh')]
         with tempfile.TemporaryDirectory(prefix="hyprflux-test-") as temp:
             (Path(temp) / "wayland-0.lock").touch()
             with socket.socket(socket.AF_UNIX) as server:
@@ -618,7 +608,7 @@ class InstallerTests(unittest.TestCase):
         wrapper = (ROOT / "airootfs/root/lib/hyprflux-chroot-wrapper.sh").read_text()
         cleanup = wrapper.split("cleanup_wrapper() {", 1)[1].split("\n}", 1)[0]
         with tempfile.TemporaryDirectory(prefix="hyprflux-test-") as temp:
-            for name in ("etc/sudoers.d/hyprflux-temp", "usr/local/bin/chsh", "usr/local/bin/gsettings",
+            for name in ("etc/sudoers.d/hyprflux-temp", "etc/sudoers.d/99-hyprflux-temp", "usr/local/bin/chsh", "usr/local/bin/gsettings",
                          "usr/local/bin/nwg-look", "usr/local/bin/yay-iso", "tmp/hyprflux-module-env.sh"):
                 path = Path(temp) / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -799,7 +789,7 @@ exit "$VERIFY_RESULT"
                 calls=0
                 desktop_commands_present() {{ [[ -f {str(marker)!r} ]]; }}
                 rotate_mirrors() {{ :; }}
-                timeout() {{
+                run_stage() {{
                     calls=$((calls + 1))
                     if (( calls >= 2 )); then touch {str(marker)!r}; return 0; fi
                     return 1
@@ -810,7 +800,7 @@ exit "$VERIFY_RESULT"
                 [[ $calls == 2 ]] || exit 1
                 rm -f {str(marker)!r}
                 calls=0
-                timeout() {{ calls=$((calls + 1)); return 1; }}
+                run_stage() {{ calls=$((calls + 1)); return 1; }}
                 if install_desktop_aur; then exit 1; fi
                 [[ $calls == 3 ]]
             ''')

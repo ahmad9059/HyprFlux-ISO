@@ -2,6 +2,13 @@
 
 ## Goal
 
+### Locale/profile UX amendment
+
+Remove locale selection from the TUI; keep `en_US.UTF-8` as the installation
+default and show it in the review. Users can change it after installation.
+Keep keyboard/timezone selection. Explain Desktop and Full separately, retaining
+the same configured desktop in both and the additional application bundle in Full.
+
 ### Audit-fix amendment (2026-11-03)
 
 Fail closed if block-device inspection fails. Automatic mode rejects mounted,
@@ -43,7 +50,7 @@ After this phase, the installer can take a bare machine from boot to a working b
 | 0 | Network | Yes (if no internet) | Ensure internet connectivity |
 | 1 | Welcome | Yes | Confirm installation start |
 | 2 | Timezone | Yes | Auto-detect + manual override |
-| 3 | Locale | Yes | Select locale (default: en_US.UTF-8) |
+| 3 | Locale | No | Use en_US.UTF-8; configurable after installation |
 | 4 | Keyboard | Yes | Select keyboard layout |
 | 5 | Hostname | Yes | Enter hostname |
 | 6 | User Account | Yes | Create username + password |

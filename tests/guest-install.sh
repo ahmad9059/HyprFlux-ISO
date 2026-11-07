@@ -2,6 +2,39 @@
 # TEST VM ONLY. This file is never copied into the production live filesystem.
 set -euo pipefail
 [[ "${1:-}" == "" || "${1:-}" == --resume ]] || exit 96
+diagnose_test_network() {
+    local target="$1" host
+    echo HYPRFLUX_NETWORK_CONTEXT_BEGIN
+    date -u
+    echo 'Live resolver:'
+    cat /etc/resolv.conf
+    echo 'Target resolver:'
+    cat "$target/etc/resolv.conf" || true
+    for host in geo.mirror.pkgbuild.com mirrors.mit.edu mirror.rackspace.com; do
+        echo "Live DNS: $host"
+        timeout 6 getent ahostsv4 "$host" || echo 'Live DNS lookup failed'
+        echo "Chroot DNS: $host"
+        if [[ -x "$target/usr/bin/getent" ]]; then
+            timeout 6 arch-chroot "$target" getent ahostsv4 "$host" || echo 'Chroot DNS lookup failed'
+        else
+            echo 'Chroot DNS probe skipped: base system not installed yet'
+        fi
+    done
+    echo 'Live HTTPS:'
+    curl --fail --silent --show-error --location --connect-timeout 5 --max-time 12 \
+        -o /dev/null -w 'HTTP=%{http_code} DNS=%{time_namelookup} total=%{time_total}\n' \
+        https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db || true
+    echo 'Chroot HTTPS:'
+    if [[ -x "$target/usr/bin/curl" ]]; then
+        timeout 15 arch-chroot "$target" curl --fail --silent --show-error --location \
+        --connect-timeout 5 --max-time 12 -o /dev/null \
+        -w 'HTTP=%{http_code} DNS=%{time_namelookup} total=%{time_total}\n' \
+        https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db || true
+    else
+        echo 'Chroot HTTPS probe skipped: base system not installed yet'
+    fi
+    echo HYPRFLUX_NETWORK_CONTEXT_END
+}
 test_exit() {
     local rc=$?
     if (( rc != 0 )); then
@@ -11,6 +44,7 @@ test_exit() {
             sync || true
             local target="${MOUNT_POINT:-/mnt/archinstall}"
             if mountpoint -q "$target"; then
+                diagnose_test_network "$target" || true
                 mkdir -p "$target/var/log/hyprflux-installer/failed-live" \
                     && cp -a "${INSTALL_LOG_DIR:-/var/log/hyprflux-installer}/." \
                         "$target/var/log/hyprflux-installer/failed-live/" || true
@@ -63,7 +97,17 @@ start_progress() {
 stop_progress() { :; }
 die() { echo "ERROR: $*"; tail -80 "$PROGRESS_LOG"; exit 1; }
 cancel_installation() { echo 'ERROR: automated installation cancelled'; exit 1; }
-tui_menu() { echo "$disk (40G) QEMU test disk"; }
+tui_menu() {
+    if [[ "$1" == 'Choose an application profile:' ]]; then
+        if [[ "$test_profile" == desktop ]]; then
+            printf '%s\n' 'Desktop (recommended; smaller and faster)'
+        else
+            printf '%s\n' 'Full application bundle'
+        fi
+    else
+        echo "$disk (40G) QEMU test disk"
+    fi
+}
 tui_input() { if [[ "$1" == 'Swap size'* ]]; then echo "$test_swap"; else echo yes; fi; }
 tui_yesno() { (( test_swap > 0 )); }
 tui_spinner() { shift; "$@"; }
@@ -131,7 +175,7 @@ run_test_manual_layout() {
 }
 
 INSTALL_TIMEZONE=UTC
-INSTALL_LOCALE=en_US.UTF-8
+[[ "$INSTALL_LOCALE" == en_US.UTF-8 ]] || die 'Installer default locale is not en_US.UTF-8'
 INSTALL_KEYMAP=us
 INSTALL_HOSTNAME=hyprflux-test
 INSTALL_USERNAME=fluxcheck
@@ -139,7 +183,8 @@ INSTALL_USERNAME=fluxcheck
 INSTALL_PASSWORD=hyprflux-test-only
 INSTALL_BOOT_MODE=$(detect_boot_mode)
 INSTALL_HAS_NVIDIA=no
-INSTALL_PROFILE="$test_profile"
+step_profile
+[[ "$INSTALL_PROFILE" == "$test_profile" ]] || die 'Profile menu selected unexpected application bundle'
 check_internet || die 'VM network unavailable'
 # The disposable VM uses the host RTC. Simulate only the user's acknowledgement;
 # run real bounded keyring preflight. Blocked-NTP interaction is a separate test.
@@ -161,6 +206,7 @@ if [[ "${1:-}" == --resume ]]; then
         mount -t vfat "$EFI_PART" "$MOUNT_POINT/boot"
     fi
     if [[ -n "$SWAP_PART" ]]; then swapon "$SWAP_PART"; fi
+    diagnose_test_network "$MOUNT_POINT"
     INSTALL_DISK="$disk"
     cp "$SCRIPT_DIR/lib/configure-initramfs.sh" "$MOUNT_POINT/root/configure-initramfs.sh"
     echo '==> Resuming desktop integration; existing partitions and packages preserved.'
@@ -173,6 +219,9 @@ else
     seed_test_package_cache
     step_base_install
     step_configure_system
+    grep -Fxq 'LANG=en_US.UTF-8' "$MOUNT_POINT/etc/locale.conf"
+    grep -Eq '^en_US[.]UTF-8[[:space:]]+UTF-8[[:space:]]*$' "$MOUNT_POINT/etc/locale.gen"
+    echo HYPRFLUX_DEFAULT_LOCALE_PASS
 fi
 if [[ "${1:-}" == --resume ]]; then seed_test_package_cache; fi
 step_install_hyprflux
@@ -202,6 +251,9 @@ if [[ "$INSTALL_PROFILE" == full ]]; then
 fi
 
 # Test-only autologin lets us check a real SDDM -> Hyprland session after reboot.
+if grep -qw 'hyprflux.virtualaudio=1' /proc/cmdline; then
+    touch "$MOUNT_POINT/etc/hyprflux-test-virtual-audio"
+fi
 mkdir -p "$MOUNT_POINT/etc/sddm.conf.d"
 if grep -qw 'hyprflux.passwordlogin=1' /proc/cmdline; then
     touch "$MOUNT_POINT/etc/hyprflux-test-password-login"
@@ -213,6 +265,7 @@ Session=hyprland.desktop
 EOF
 fi
 cp /run/hyprflux-source/tests/guest-verify.sh "$MOUNT_POINT/root/guest-verify.sh"
+cp /run/hyprflux-source/tests/guest-desktop-checks.sh "$MOUNT_POINT/root/guest-desktop-checks.sh"
 cat > "$MOUNT_POINT/etc/systemd/system/hyprflux-test-verify.service" <<'EOF'
 [Unit]
 After=display-manager.service

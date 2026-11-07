@@ -3,6 +3,7 @@
 set -euo pipefail
 boot_exit() {
     local result=$?
+    if declare -F cleanup_desktop_checks >/dev/null; then cleanup_desktop_checks; fi
     if [[ -n "${capture_dir:-}" ]]; then rm -rf -- "$capture_dir"; fi
     if (( result != 0 )); then
         ps -eo user,pid,ppid,etime,args
@@ -34,9 +35,10 @@ boot_exit() {
 trap boot_exit EXIT
 assert_installer_cleanup() {
     local root="${1%/}" path
-    for path in etc/sudoers.d/hyprflux-temp etc/sudoers.d/hyprflux-pacman \
+    for path in etc/sudoers.d/hyprflux-temp etc/sudoers.d/hyprflux-pacman etc/sudoers.d/99-hyprflux-temp \
         usr/local/bin/chsh usr/local/bin/gsettings usr/local/bin/nwg-look \
-        usr/local/bin/yay-iso usr/local/bin/systemctl-shim tmp/hyprflux-module-env.sh; do
+        usr/local/bin/yay-iso usr/local/bin/systemctl-shim tmp/hyprflux-module-env.sh \
+        root/hyprflux-fix-foot-config.py root/hyprflux-run-stage.py; do
         if [[ -e "$root/$path" || -L "$root/$path" ]]; then
             echo "ERROR: installer artifact remains: /$path"
             return 1
@@ -46,7 +48,25 @@ assert_installer_cleanup() {
     echo 'Installer cleanup verified; systemctl is ELF.'
 }
 assert_installer_cleanup /
+systemctl is-active dbus.service
+python - <<'DBUS_POLICIES'
+from pathlib import Path
+import xml.etree.ElementTree as ET
+for directory in ('/usr/share/dbus-1/system.d', '/etc/dbus-1/system.d'):
+    for policy in Path(directory).glob('*.conf'):
+        try:
+            ET.parse(policy)
+        except (OSError, ET.ParseError) as error:
+            raise SystemExit(f'Invalid system D-Bus policy {policy}: {error}')
+print('System D-Bus policies parse successfully.')
+DBUS_POLICIES
 uid=$(id -u fluxcheck)
+runuser -u fluxcheck -- sudo -k
+if runuser -u fluxcheck -- sudo -n true; then
+    echo 'ERROR: installed user retains unrestricted passwordless sudo'
+    exit 1
+fi
+echo HYPRFLUX_SUDO_AUTHENTICATION_REQUIRED_PASS
 export XDG_RUNTIME_DIR="/run/user/$uid"
 if [[ -f /etc/hyprflux-test-password-login ]]; then
     if grep -R -Eq '^[[:space:]]*User[[:space:]]*=[[:space:]]*fluxcheck[[:space:]]*$' \
@@ -125,6 +145,7 @@ for candidate in "$XDG_RUNTIME_DIR"/wayland-*; do
     fi
 done
 [[ -n "$wayland_socket" ]]
+source /root/guest-desktop-checks.sh
 capture_dir=$(mktemp -d /tmp/hyprflux-desktop-capture.XXXXXX)
 chown "$uid:$(id -g fluxcheck)" "$capture_dir"
 runuser -u fluxcheck -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \

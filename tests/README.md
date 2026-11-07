@@ -2,6 +2,12 @@
 
 ## Fast checks (no root, no VM, no network)
 
+Desktop implementation regressions now live in the **HyprFlux config repo**:
+`python3 -m unittest discover -s tests -v` there checks Foot and its generator,
+config parity, Kitty GPU handling, cyan icons/hooks and SDDM dependencies.
+This ISO repo checks delegation to the published source pin and validates the
+installed result; it does not carry duplicate desktop-fix utilities.
+
 ```bash
 python3 -m unittest discover -s tests -v
 ```
@@ -242,6 +248,25 @@ disk bus and firmware mode. On multi-GPU hosts, `--3d` probes render nodes and
 selects one that initializes and shuts down cleanly; override with
 `--render-node /dev/dri/renderD128` if necessary.
 
+Add `--virtual-audio` on a new install to attach Intel HDA and remember it for
+installed boot tests. The guest requires a real ALSA PipeWire sink and streams a
+short WAV through `pw-play`. QEMU uses the `none` audio backend: no host sound is
+played or recorded. This proves virtual guest routing/streaming, **not audible
+hardware playback**. System D-Bus must also be active and all system policy XML
+must parse before any desktop boot pass is recorded.
+
+A second `--boot STATE --3d --offline` checks a cold installed-system reboot
+without Internet. It does not rerun package installation or first-login setup.
+
+`guest-maintenance-checks.sh` is a separate guarded overlay-only test, never part
+of a clean install or a production image. It deliberately resets one test
+Papirus link, reinstalls the same cached official package with required local
+signature verification, and requires the actual upgrade hook to restore cyan.
+It also maps Thunar, Firefox and Chromium (temporary browser profiles, normal
+sandboxing) and captures their windows. Such states are marked
+`maintenance_test=true`, `embedded=false`, `resumed=true` and excluded from clean
+matrix acceptance; their clean read-only backing disk must remain unchanged.
+
 Installation gets a three-hour deadline; smoke/boot tests get ten minutes.
 Override with `--timeout SECONDS`. Failure preserves the disk and logs.
 Allow roughly 30 GiB of host free space for a full install, including package
@@ -295,7 +320,57 @@ disk, never in the production image. **Do not distribute test qcow2 images.**
 
 ## Release acceptance
 
+### Installer presentation checks
+
+Installed desktop acceptance additionally validates Foot configuration and blur
+requests, cyan Papirus folder symlinks/GTK theme, real mapped Kitty and Foot
+windows, and actual HyprFlux SDDM QML theme rendering (not its fallback login).
+Detailed test logs/screenshots remain in `/var/log/hyprflux-desktop-checks/` on
+the disposable guest. The themed QML test uses Qt software rendering to isolate
+QML dependencies from virtual-GPU EGL issues; it is not hardware acceptance.
+Kitty's local launcher limits the tested software-rendering workaround to VirtIO
+DRM graphics and removes that automatic override from child shells.
+
+The HyprFlux UI follows classic Omarchy's wordmark/dim-log-tail layout, with
+HyprFlux's cyan logo, pink/magenta prompts and yellow status text. MIT attribution
+is included in the image. Dot spinners
+use a console-safe line variant on Linux VTs; menu heights adapt to the terminal.
+The builder runs real Gum PTY checks plus resize, log sanitation, monitor cleanup
+and exit-status regressions.
+
+```bash
+python3 tests/qemu-smoke.py --tui-preview path/to.iso
+python3 tests/qemu-smoke.py --tui-preview --embedded path/to.iso
+```
+
+This previews **current source** on tty1 of a disposable live guest and saves
+`tui-preview.png`; add `--embedded` to render the UI library from the actual ISO.
+Its log text is synthetic, clearly labelled as a preview;
+it does not partition or install anything and does not certify the embedded ISO.
+
+The installer does not prompt for locale: it defaults to `en_US.UTF-8`, which
+users may change after installation. Automated installs exercise each application
+profile menu choice and check target locale generation/configuration.
+
+For this workspace, `.qemu-tests` links to
+`/drive-data/HyprFlux-ISO/qemu-tests`, keeping disposable disks and evidence on the
+larger filesystem without changing the harness's state-directory safety checks.
+
 Additional fault/UX cases:
+
+For repeated package-mirror failures, collect guest DNS/HTTPS evidence without
+starting another installation:
+
+```bash
+python3 tests/qemu-smoke.py --network-diagnostics path/to.iso
+python3 tests/qemu-smoke.py --network-diagnostics --ipv4-network path/to.iso
+```
+
+The second command disables IPv6 advertisement only on that disposable QEMU
+network, not in the production installer. Logs include resolvers, routes,
+sequential HTTPS probes and five concurrent mirror requests. A diagnostic
+completion marker means evidence was collected, **not** that connectivity or an
+installed desktop passed acceptance. Installed tests record their network mode.
 
 ```bash
 # Live boot/keyring with external networking unavailable; also checks a real
@@ -332,6 +407,11 @@ PNG screenshot. The optional flag exits nonzero if a required Desktop/Full
 VM case is missing. Firmware smoke, optional-app audits, screenshot inspection,
 interactive TUI use and physical hardware are separate gates; a complete VM
 report never certifies production readiness.
+
+The required recorded matrix has six cases: Desktop automatic and manual-GPT
+under UEFI and BIOS, plus Full automatic under UEFI and BIOS. The QEMU runner
+copies a fresh OVMF variable template on every UEFI invocation, so installed UEFI
+boots also exercise the removable-media fallback loader without retained NVRAM.
 
 Do not call an image production-ready until these pass on that exact image:
 

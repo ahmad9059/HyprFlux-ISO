@@ -2,7 +2,661 @@
 
 This is a progress checkpoint, **not production certification**.
 
+## Deep exact-image KVM verification — 2026-11-06, complete
+
+**Final outcome: all six clean VM cases PASS on one exact final ISO.**
+
+| Profile | Firmware | Layout | Install | Desktop boot | Offline second boot | Visual review |
+|---|---|---|---|---|---|---|
+| Desktop | UEFI | Automatic, NVMe/swap | PASS | PASS | PASS | PASS |
+| Desktop | BIOS | Automatic, SATA/swap | PASS | PASS | PASS | PASS |
+| Desktop | UEFI | Manual GPT, SCSI | PASS | PASS | PASS | PASS |
+| Desktop | BIOS | Manual GPT, VirtIO | PASS | PASS | PASS | PASS |
+| Full | UEFI | Automatic, NVMe | PASS | PASS | PASS | PASS |
+| Full | BIOS | Automatic, SATA/swap | PASS | PASS | PASS | PASS |
+
+Final ISO:
+`/drive-data/HyprFlux-ISO/production-final-20261106-build/out/build-20261105T224215Z-1/hyprflux-2026.11.05-x86_64.iso`
+
+SHA256: `6fb9e974befcd6f00694ea1e016c1083850956f1524349ea66074bb1c550f7f0`.
+
+Evidence directory: `/drive-data/HyprFlux-ISO/qemu-tests/production-final-20261106/`.
+`acceptance-report.json` requires all six cases and reports no missing cases.
+`results.json` is reconciled with independent `visual-review.json`: no screenshot
+review remains pending. Final Full BIOS state `bios-fn6u35cl` also passes the
+extended-package presence audit. All 108 builder regressions pass.
+
+Additional final-image checks: real UEFI/BIOS ISO firmware loaders, offline live
+keyring initialization, undersized real-ext4 rejection, embedded cyan/yellow TUI
+preview, 4 GiB/swap/NTP-off install, actual SDDM password login, fresh-NVRAM EFI
+fallback boots, system D-Bus XML, temporary-grant/shim cleanup, effective sudo
+authentication, terminal windows/blur, cyan GTK/icon settings and virtual HDA
+PipeWire streaming. Overlay-only signed Papirus reinstall hook plus inspected
+Thunar/Firefox/Chromium UI also pass; that overlay never counts as a clean case.
+
+**Not production certification:** physical Intel/AMD/NVIDIA, Wi-Fi, audible audio,
+suspend/resume and external monitors remain untested. Human end-to-end TUI and
+manual partition-shell acceptance are not replaced by these automated fixtures.
+Browser screenshots certify launch/render only, not media or all app workflows.
+Online repositories can change after testing. Publisher signing with a separately
+trusted fingerprint remains outstanding; a checksum is not authentication.
+No public release was published. Shared fixes are pushed upstream; accumulated
+ISO changes remain uncommitted/unpushed. Historical running entries below are
+checkpoint provenance, not the current completion state.
+
+Final **Desktop BIOS manual PASS** (`bios-jpxqj63i`): clean manual GPT/VirtIO
+install, desktop first boot and offline second cold boot. Terminal/blur and
+actual-theme greeter screenshots inspected. All four Desktop layout/firmware
+combinations and Full UEFI now pass on the final image (5/6 cases).
+Final Full BIOS automatic checkpoint running as `sh_1ae575b72001f1X6ELuH16OESy`.
+Acceptance reporting now explicitly requires all six cases (including Full BIOS)
+and regression-checks maintenance-state exclusion. All 108 builder regressions
+pass after that report-only change; the production ISO is unchanged.
+UEFI installed boots use fresh OVMF variable templates on every invocation
+(`tests/qemu-smoke.py`), exercising fallback EFI boot without retained NVRAM.
+
+Final **Desktop UEFI manual PASS** (`uefi-y7lvv38t`): actual manual GPT/ext4
+validation and clean SCSI install, strict desktop first boot and offline second
+boot. Terminal/blur and actual-theme greeter screenshots inspected and retained.
+Final matrix is now 4/6 cases passed. BIOS manual checkpoint running as
+`sh_1ae47ad75001A65KdrtP3t6eBi`; Full BIOS remains after it.
+
+Final **Desktop BIOS automatic PASS** (`bios-yw21uft2`): clean SATA/swap install,
+strict first desktop boot and offline second cold boot. Terminal/blur and actual
+SDDM-theme screenshots inspected and recorded in the independent visual ledger.
+Evidence exported before the completed disposable disk was retired by workflow;
+clean UEFI Desktop/Full disks are still retained for inspection.
+UEFI manual-layout checkpoint running as `sh_1ae382b3f001IuuiMynGfLLOxl`;
+BIOS manual and Full BIOS are next. Automated manual tests validate real GPT/ext4
+and mount paths but do not certify a human's partition-shell/TUI interaction.
+
+Final **Full UEFI PASS** (`uefi-jm1wehju`): clean install, strict desktop boot and
+offline second cold boot, virtual audio, cleanup/sudo/D-Bus checks. Terminal and
+actual-theme greeter screenshots inspected; visible terminal blur and prompts.
+Exported full package audit confirms extended bundle installed, including
+waybar-git, VS Code, 64gram, Vesktop, LocalSend, Kdenlive and CLI tools.
+Package-log review retained in `full-uefi-package-audit.txt`: mirror-rating and
+slow npm warnings recovered; chroot/display-deferred warnings remain visible.
+Live package scriptlet reports the deliberately test-masked tty1 getty, while
+the installed desktop boots successfully. No package failure was found in the
+extended-bundle audit. Package presence does not certify every app's functionality.
+
+Desktop BIOS automatic checkpoint now running as `sh_1ae2838f9001YKWFX8G9p1kRnq`.
+Manual UEFI/BIOS and Full BIOS remain pending on the same exact final image.
+
+Maintenance visual retest PASSES: explicit window-address focus and active-window
+plus workspace assertions produce real Thunar, Firefox and Chromium screenshots.
+Inspected all three: cyan folders visible in Thunar, browser UI rendered normally.
+Evidence: final workflow `maintenance-focused-*.png`,
+`maintenance-focused-evidence.tar`, and `maintenance-result.json`.
+This is launch/render smoke, NOT webpage, media or hardware-acceleration coverage.
+Earlier wallpaper-only screenshots remain retained/excluded; no production code
+or clean backing disk changed. The overlay is never a clean matrix case.
+
+Final maintenance overlay: real signed same-version Papirus reinstall executes
+the actual hook and restores cyan successfully. Thunar, Firefox and Chromium all
+map with normal sandboxing after the root-service fixture imports graphical
+session DISPLAY/XAUTHORITY. This is not an ISO defect or clean matrix pass.
+Screenshot inspection found wallpaper-only app captures, so visual acceptance
+is explicitly withheld; retesting with window-address focus plus active window
+and workspace assertions. Prior screenshots/logs are retained, not hidden.
+
+Final-image Full UEFI clean install checkpoint is now running as
+`sh_1ae04dfe7001eKgTNQSu9Bvv4z`; remaining BIOS/manual checkpoints still pending.
+
+**Final hardened candidate built:**
+`/drive-data/HyprFlux-ISO/production-final-20261106-build/out/build-20261105T224215Z-1/hyprflux-2026.11.05-x86_64.iso`
+SHA256 `6fb9e974befcd6f00694ea1e016c1083850956f1524349ea66074bb1c550f7f0`.
+Its UEFI/BIOS firmware, offline live/keyring/real-small-ext4 rejection, embedded
+UI preview and CLEAN Desktop UEFI install/boot+offline second boot all pass.
+Desktop uses 4 GiB, swap, NTP disabled, real SDDM password login and virtual HDA.
+Strict sudo-auth, D-Bus, terminals/blur, cyan links and actual-theme greeter checks
+pass; screenshots inspected and recorded in the FINAL workflow's visual ledger.
+State: `uefi-je35ncr9`.
+
+Stopped only the now-superseded intermediate Full coordinator/harness/VM to free
+RAM for final-image testing. Its package installation had completed, but no boot
+or final-image pass is claimed; cancellation/provenance remains in the old
+workflow directory. The installed intermediate disk is not used for final tests.
+
+Task `sh_1adfd5d74001ThH375f1NQe7W8` now runs the FINAL candidate's additional
+maintenance/app smoke on a read-only-backed overlay of the clean Desktop disk.
+It cannot change or fill the clean parent matrix case. After that checkpoint,
+continue `production-final-20261106/continue.py full-uefi`, then Desktop BIOS,
+both manual-layout cases, and Full BIOS, one resource-safe checkpoint at a time.
+
+First candidate (`c798711be064a6a09b0dc419ae78daa70215c3ca811f1a44301e66f1db76ddeb`)
+passed both firmware loaders, offline live/keyring/real low-space rejection,
+embedded UI preview and clean Desktop UEFI/NVMe with 4 GiB/swap/NTP-off/real
+password login/virtual HDA. Its second installed boot passed with networking
+blocked. Terminal/greeter/UI screenshots were inspected; blur is visible on both
+terminals and the actual theme renders. A normal Hyprland update-news dialog is
+visible, not a configuration error. Effective unrestricted passwordless sudo is
+also rejected. See that workflow's independent `visual-review.json` ledger.
+
+The deeper audit found a failure-path gap: upstream `scripts/zsh.sh` can create
+`/etc/sudoers.d/99-hyprflux-temp`, but the ISO outer cleanup covered only its own
+grant. Added outer revocation and a regression fixture for that extra grant.
+Added fail-closed installer postcondition validation for system D-Bus XML, so a
+malformed policy is rejected before claiming a bootable desktop. No invalid file
+is deleted or silently repaired. **108 builder regressions pass.**
+
+Because this changes production code, the first image is explicitly superseded
+for final acceptance; its bounded Full UEFI attempt `sh_1add7c5c5001x9A2RkPSOBNr3X`
+may finish as intermediate evidence, never as the final image's pass.
+`production-20261106/continue.py` now refuses further cases for the superseded
+candidate. No repairs or old-image successes fill the new matrix.
+
+Final-candidate task `sh_1ade063110016bDobAf1b6Ogoh` freezes the hardened source,
+builds under `/drive-data/HyprFlux-ISO/production-final-20261106-build/`, and repeats
+firmware/offline/UI/Desktop-first checks. Continue subsequent cases from
+`.qemu-tests/production-final-20261106/continue.py` after each checkpoint.
+The application/real-Papirus-upgrade-hook overlay test was deferred due to host
+memory pressure; rerun the FINAL workflow's `maintenance.py` when the main test
+VM has stopped. It uses a read-only-backed overlay and cannot count as a clean
+matrix case or modify the clean parent disk. Thunar/Firefox/Chromium screenshots
+and a signed same-version Papirus reinstall exercise actual app/hook behavior.
+
+The user requested autonomous thorough verification and authorized generated
+artifact cleanup. No physical disks or unrelated/user interactive VMs are used.
+Retired only unused superseded test qcow2 disks and old completed build scratch,
+retaining serial logs, source snapshots, screenshots, metadata and the latest
+prior ISO/clean Desktop disk. Recovered signed cache pairs before retiring the
+old repaired Full disk; full logs were exported first. External free space rose
+to about 103 GiB. Cleanup ledger: `production-artifact-cleanup.log`.
+
+Investigated the upstream CI crash in isolated current-Arch containers: Hyprland
+0.57.1's first root headless verify can segfault even on a minimal config, while
+unprivileged checks parse successfully. Published focused upstream CI fix
+`74735688a2703a717694518b5699e79991c33a74`; verification uses an isolated
+unprivileged HOME/private short runtime, with no root compositor override.
+A real intentional-invalid-config test must fail without segfault/retry.
+All **9 upstream tests and the complete upstream CI PASS**:
+https://github.com/ahmad9059/HyprFlux/actions/runs/42117448389
+The ISO now pins this revision. This does not alter actual compositor startup.
+
+Added read-only D-Bus policy checks and optional recorded virtual-HDA/PipeWire
+streaming checks (null host output, NOT hardware audio certification). **106 ISO
+builder regressions PASS, no skips**; ShellCheck and whitespace checks pass.
+KVM/QMP preflight passes. All build/cache/temp/ISO/VM artifacts use `/drive-data`.
+
+Task `sh_1adbf181f001YXoGnWS7eQSt0B` freezes the current source, builds a fresh
+default-xz candidate with curated signed online cache, tests real UEFI/BIOS ISO
+loaders, offline live/keyring/low-space guards, embedded UI preview, and then a
+clean Desktop UEFI/NVMe 4 GiB/swap/NTP-off/password-login/virtual-audio install.
+It also checks a second cold installed boot with guest external network blocked.
+Evidence: `/drive-data/HyprFlux-ISO/qemu-tests/production-20261106/`.
+
+Further checkpoints queued in that directory's `continue.py`: clean Full UEFI,
+Desktop BIOS automatic, Desktop UEFI/BIOS manual, and Full BIOS. Each case uses
+the SAME exact ISO, checks initial and offline second boots, and exports logs and
+terminal/greeter screenshots before retiring only completed disposable disks if
+needed. A repair/resume never fills a clean matrix slot. Failures remain failures
+until diagnosed/retested; do not claim completion from the build/regressions.
+No public release, publisher signing or physical-hardware certification is planned.
+
+## Desktop ownership migration — 2026-11-06
+
+At the user's request, moved shared desktop fixes out of the ISO and into the
+actual HyprFlux source repo (`../HyprFlux`, not a reference checkout). The user
+explicitly authorized focused upstream commits and pushes. Published to main:
+
+- `42aabc062c3f294b95ae764409fea0d827b7a104`: Foot syntax/blur and palette generator,
+  mirrored base-dots configs, shared Kitty launcher, cyan Papirus helper/hook,
+  SDDM Qt dependencies, repeatable theme copy, and desktop regression tests/CI.
+- `96535f47357b3b53ef03219bd6f4d65d0a3e174b`: remove the redundant/deprecated
+  workspace scale from both source trees rather than stripping it in the ISO.
+
+The ISO now pins the latter published SHA. Removed all three duplicate ISO
+desktop-fix utilities, their target-copy/hook creation, the temporary theme-module
+sed adaptation, Foot/default normalization, and the obsolete Waybar hwmon repair
+(already fixed in upstream hardware detection). Retained read-only config and
+package validation, strict guest desktop checks, and genuinely chroot/offline
+session adaptations. Source ownership guidance is in AGENTS.md and phase 5.
+
+**8 upstream tests pass (including real Foot parsing); 104 ISO builder tests
+pass with no skips.** Config parity, color-generator freshness, ShellCheck and
+whitespace checks pass. The upstream remote main SHA was verified after push.
+GitHub CI's shared desktop tests pass, but its separate Hyprland headless
+`--verify-config` command segfaults (exit 139). This failure is NOT suppressed or
+claimed resolved: https://github.com/ahmad9059/HyprFlux/actions/runs/42107728102
+Failed log: `/drive-data/HyprFlux-ISO/upstream-migration-ci-failure.log`.
+
+No new ISO or installed-VM matrix was built/run for this ownership migration.
+All existing images and Desktop/Full evidence below retain their old pins;
+they do not certify this new source pin. The accumulated ISO-repo changes remain
+uncommitted/unpushed; no unrelated user work was staged or discarded. Upstream
+HyprFlux's working tree is clean after the focused published commits.
+
+## Verification continued — 2026-11-05
+
+**Final recovery outcome: PASS. No verification workflow remains running.**
+After preserving the interrupted-install orphan files, Full passed the normal
+strict boot verifier (`HYPRFLUX_TEST_BOOT_PASS`), real terminal/cyan-folder checks
+and actual-theme greeter rendering. Full's strict application package audit had
+already passed. Extracted and visually inspected both terminal/blur and themed
+greeter screenshots, retained as `full-recovered-terminals-blur.png` and
+`full-recovered-themed-greeter.png` in `desktop-fixes-20261103/`.
+
+The corrected image now has: 105 builder tests passed, both firmware loaders
+passed, CLEAN embedded Desktop install/boot passed with inspected screenshots,
+and repaired/resumed Full package-audit/boot passed with inspected screenshots.
+It does NOT have a clean Full pass or complete five-case/hardware acceptance.
+The ISO is unchanged by diagnostic guest repairs and is available for user
+testing; no release certification, commit, push or signing was performed.
+
+D-Bus diagnosis found a specific interrupted-install orphan:
+`/usr/share/dbus-1/system.d/com.redhat.tuned.conf` was zero bytes and not owned by
+any registered package. All other regular system policy .conf files parsed as
+XML. D-Bus/dbus-broker packages passed full package-file integrity checks. Saved
+metadata/policies and ownership/parse evidence as `recovered-pacman-local.tar`,
+`recovered-dbus-policies.tar`, and `invalid-dbus-policies.json` in the evidence
+directory. Preserved only the empty unowned Tuned policy in the guest's existing
+quarantine directory; did NOT weaken or remove a valid security policy.
+
+Restored the original strict guest verifier. Task
+`sh_1a86e38fe001d3UgZkRJZD6zvV` retries boot (not installation) with normal strict
+desktop checks; log `full-recovered-boot-after-policy-quarantine-20261105.log`.
+Production code/ISO remain unchanged; this disk is still repaired recovery
+evidence, never a clean-install acceptance substitute.
+
+The post-quarantine Full recovery completed and passed the strict application
+package audit. Its subsequent boot FAILED: system D-Bus refused connections,
+NetworkManager was inactive, and logind could not start user runtime/services.
+No Hyprland user session started. Therefore this is NOT a working Full desktop,
+even as recovered evidence. Result:
+`full-continuation-20261105-after-quarantine.json`.
+
+Task `sh_1a86d4de3001PbNICnUTooVQ2S` boots that same disposable disk only to
+collect failed units, D-Bus unit configuration, package integrity and service
+journal evidence. It intentionally reports diagnosis-only failure; it cannot
+produce an acceptance pass. The original verifier is backed up as
+`full-verifier-before-dbus-diagnosis.sh` before the diagnostic-only guest copy
+replaces it. No production source or ISO has changed.
+
+First recovery attempt failed closed on Electron file conflicts. Read-only export
+of pacman local metadata established that `electron43-43.8.6-1/desc` and `files`
+were empty (interrupted package extraction/registration), and no other registered
+package claimed any path under `/usr/lib/electron43`, `/usr/bin/electron43`,
+`/usr/share/licenses/electron43` or `/usr/share/pixmaps/electron43.png`.
+Ownership evidence: `desktop-fixes-20261103/interrupted-electron-ownership.txt`;
+original metadata archive: `interrupted-pacman-local.tar`.
+
+Moved only those unowned Electron paths and the empty package record into
+`/var/log/hyprflux-interrupted-electron43-20261105/` on the STOPPED disposable
+Full VM disk. All contents preserved; no --overwrite, signature-policy change,
+production-source change or host desktop mutation. Task
+`sh_1a82150e90018VLq1E0sgWRJij` retries normal recovery and then boot verification.
+Log: `desktop-fixes-20261103/continuation-20261105-after-quarantine.log`.
+Even if successful, this repaired/interrupted Full installation is recovery
+evidence only and remains excluded from clean exact-image acceptance.
+
+The user stopped the previous Full install, then explicitly requested continuation.
+The ISO and production-source checksums still match the completed Desktop
+candidate: `/drive-data/HyprFlux-ISO/desktop-fixes-build/out/build-20261103T181615Z-1/hyprflux-2026.11.03-x86_64.iso`,
+SHA256 `aee89718f1158c9079c76790e870c3d0c75b3229b92a802e0299baefd4c02bbd`.
+
+105 builder tests, both firmware loaders and clean embedded Desktop install/boot
+passed. Desktop terminal and actual-theme greeter screenshots were extracted
+read-only from `uefi-v0uhnfby` and inspected: both Kitty and Foot show shell
+prompts and blur; the SDDM theme renders without the previous missing-module
+screen. Cyan GTK theme/folder-link assertions passed. Screenshots are retained as
+`desktop-fixes-20261103/desktop-terminals-blur.png` and `desktop-themed-greeter.png`.
+
+Task `sh_1a8191225001YV36IzMIqG8Kp0` performs a bounded recovery of interrupted
+Full test disk `uefi-c62l44zz`, then boot/strict desktop checks if recovery succeeds.
+No repartitioning or rebuild; the completed Desktop test is not repeated. Because
+Full was interrupted and now resumed, this outcome must remain recovery evidence,
+NOT a clean Full or five-case matrix pass. The earlier cancellation record is
+preserved. Progress/results: `desktop-fixes-20261103/continuation-20261105.log`
+and `full-continuation-20261105.json`, all under external storage.
+
+## Desktop-theme and terminal regressions — source fixes, runtime verification
+
+Combined diagnostic checks now PASS, including mapped default terminal windows,
+cyan folder/GTK assertions, Foot's real checker and actual-theme greeter mapping.
+The initial side-by-side screenshot proved Foot's background was still sharp:
+Foot 1.28 defaults its ext-background-effect blur request off. Added blur=yes to
+colors-dark while preserving alpha=0.80; the subsequent screenshot
+`/drive-data/HyprFlux-ISO/terminals-blur-fixed.png` was visually inspected and
+shows working blur. No global Hyprland blur override was required.
+
+New-image workflow: `desktop-fixes-20261103/run.py` builds on external storage,
+checks both firmware loaders, then attempts a clean embedded Desktop and Full
+UEFI/NVMe install+boot once each, independently. The full five-case acceptance
+matrix is NOT covered by this run. This section's old "not built" statement below
+describes the start of investigation, not a completed corrected-image result.
+Running task: `sh_1a2a02939001r42G6Ide13lk4j`. Durable log:
+`/drive-data/HyprFlux-ISO/qemu-tests/desktop-fixes-20261103/workflow.log`.
+Retired only the two inactive previous build work directories to make space;
+their ISOs, checksums, source snapshots and acceptance evidence are preserved.
+
+User screenshots exposed gaps in the former acceptance criteria. All previous
+desktop passes prove only the checks then implemented; they do not certify the
+themed greeter, terminal usability, cyan folders or visible blur.
+
+Confirmed against the pinned upstream and an isolated copy of the earlier clean
+Desktop test disk (`theme-regression-diagnostic`, never the user's VM):
+
+- Desktop omitted qt6-5compat; SDDM fell back after its actual theme failed the
+  Qt5Compat.GraphicalEffects import. Dependency is now mandatory in both profiles.
+  Installing the signed cached package in the diagnostic guest rendered the actual
+  theme. Screenshot `/drive-data/HyprFlux-ISO/themed-greeter-diagnostic.png` inspected.
+- The theme-module adaptation excluded the unavailable papirus-folders package,
+  leaving no recoloring utility. A root helper now applies the cyan variants
+  already shipped by signed Papirus, verifies folder links at every size, refreshes
+  caches, and runs again through a Papirus upgrade hook. Diagnostic run changed
+  385 variants. The green first-boot success icon is untouched.
+- Foot's include was under colors-dark, used a relative path, and the included
+  palette had hash-prefixed colors and bright8..15 keys. New post-module
+  normalization fixes these, preserves alpha=0.80 and requires foot --check-config.
+  The corrected config passed the real installed Foot 1.28 checker.
+- Kitty failed even with --config NONE: VirtIO/virgl EGLConfig initialization,
+  not its color config. LIBGL_ALWAYS_SOFTWARE=1 mapped a real Kitty window.
+  A permanent local launcher applies that workaround only for DRM VirtIO devices,
+  execs the untouched packaged binary, honors user overrides, and unsets its
+  automatic workaround in Kitty child shells. Physical-GPU rendering is unchanged.
+- Runtime Hyprland blur is already enabled (size 6). No speculative compositor
+  override has been added. Terminal/blur screenshots remain to be inspected after
+  the strict combined checks pass.
+
+New boot acceptance requires Foot validation, actual cyan symlinks and GTK theme,
+blur options, mapped default Kitty/Foot windows, and a mapped actual-theme QML
+greeter with no import errors. Qt software rendering is used only for that QML
+test to isolate theme dependencies from the separate virgl limitation; this is
+not yet physical-GPU or exact-image certification. Logs/screenshots are retained
+under /var/log/hyprflux-desktop-checks in test guests.
+
+No corrected ISO has been built yet. The palette ISO remains unchanged.
+
+## HyprFlux palette correction — built and boot checked
+
+New corrected ISO:
+`/drive-data/HyprFlux-ISO/hyprflux-colors-build/out/build-20261103T165126Z-1/hyprflux-2026.11.03-x86_64.iso`
+
+SHA256: `cec4348a01f54cdc236c00ce20b0c729cd936277e85b941e43e83dff50092936`.
+Build, UEFI and BIOS firmware smoke passed. Actual embedded UI screenshot
+`uefi-mfa90f19/tui-preview.png` visually inspected: cyan logo, yellow loading line
+and dim log tail. Pink/magenta input/selection styling is covered by regressions
+and real-Gum tests. No workflow remains running. This palette-only rebuild has
+not rerun the installed-profile matrix and is not release certified. Previous
+green-image installation passes remain historical, not exact-image passes here.
+
+User rejected Omarchy's green branding. Restored the original HyprFlux palette:
+cyan ASCII wordmark (`1;36`), yellow loading/status text, Gum 212 pink/magenta
+input/cursor/selection/filter-match accents, white headers, and no green selected
+background. Kept the new responsive layout, static header, buffered logs and
+console-safe spinner behavior. Green success messages/checkmark remain unchanged.
+
+**100 builder tests PASS, no skips**, including a new palette regression.
+Task `sh_1a2527fd90015OpT8OV45H8iJ7` builds a new image under
+`/drive-data/HyprFlux-ISO/hyprflux-colors-build/`, then checks both firmware
+loaders and captures its actual embedded UI for visual review. Logs:
+`/drive-data/HyprFlux-ISO/qemu-tests/hyprflux-colors-20261103/`.
+The previously supplied green ISO is unchanged. This palette-only image does
+not inherit prior install acceptance; no new profile-matrix pass is claimed.
+
+## Omarchy-style HyprFlux presentation — implemented; partial acceptance
+
+**No acceptance workflow remains running.** The final independent attempts also
+failed on network access: BIOS manual in bounded keyring preflight, UEFI manual
+during essential-package transfer/signature retrieval, and BIOS automatic on
+preflight/package download. The aggregate acceptance report correctly exits
+nonzero with three missing cases. Clean Full automatic UEFI and Desktop automatic
+UEFI remain passed for this exact image; do not reuse predecessor/manual/recovery
+passes to fill the gaps. Failure logs and `acceptance.log` are in the UI evidence
+directory. No release, commit, push or signing was performed.
+
+In the failed UEFI manual case, both live and chroot DNS lookups succeeded in
+the immediate failure diagnostics; geo core.db HTTPS returned 200 in 1.31/1.09 s
+respectively despite earlier pacman resolution failures. This remains an
+intermittent/sustained-transfer issue, not a proven BIOS, manual-layout, permanent
+chroot-DNS or IPv6 fault. Do not keep starting fresh installs automatically while
+the external download environment is unreliable. The completed user-facing UI
+changes and both clean UEFI profile outcomes are usable evidence, NOT completion
+of all release/hardware gates.
+
+New UI candidate:
+`/drive-data/HyprFlux-ISO/omarchy-ui-build/out/build-20261103T130612Z-1/hyprflux-2026.11.03-x86_64.iso`,
+SHA256 `62dc2ebd5cb56696ab4fdf012565db42be0f2849df1c5eac0ebcb35a4e27553e`.
+It passed both firmware loaders and CLEAN embedded Full UEFI/NVMe installation,
+complete package audit and desktop boot (`uefi-p2llm2fb`), plus CLEAN embedded
+Desktop UEFI/NVMe with 4 GiB RAM, NTP disabled, swap and real password login
+(`uefi-g7bamohp`). Both desktop screenshots were inspected, including checkmarks.
+
+Embedded UI was also rendered directly from `/root/lib/tui.sh` in this ISO and
+visually inspected at `uefi-o1awz24r/tui-preview.png`. This uses synthetic preview
+logs (not installation evidence), but verifies the actual image's presentation,
+not hot-loaded code. The preview flag is explicitly excluded from acceptance.
+
+Two BIOS automatic attempts failed on package-transfer/signing-preflight network
+timeouts; the second failed before any disk setup. These are not successful BIOS
+installs. Task `sh_1a1eab37f001RzYVPeImEMPtYF` gives each still-missing case one
+independent attempt, with manual layouts first, retaining verified Full/UEFI passes
+and continuing after individual failures. Log: `omarchy-ui-20261103/workflow-independent.log`.
+Do not rerun passed cases or rebuild this unchanged image for network failures.
+
+Retired superseded pre-UI Desktop and recovered Full disks while retaining their
+metadata/logs/screenshots; the new clean Full and Desktop UEFI disks remain.
+The host launcher follows the relocated `out` directory when finding images,
+while still refusing symlink ISO files and accidental existing-disk overwrites.
+
+Recovered Full boot passed (`uefi-6qo6vw_e`); screenshot inspected with working
+Waybar/wallpaper and green success checkmark. It remains a resumed/hot-loaded,
+IPv4-only diagnostic result, not clean-install acceptance.
+
+Adapted the classic Omarchy presentation (reference
+`b45e8464ef4cc094d6edec46faa2a3632a462dd4`) for HyprFlux: static green wordmark,
+no author separator, green/cyan prompts, adaptive menu/filter height and compact
+header, buffered dim arrow-prefixed log tail, resize-aware dynamic region, and
+dot spinners with an ASCII-line fallback on Linux VTs whose font lacks Braille.
+Stage logs remain intact, displayed control codes are sanitized, command status
+propagates, and the progress monitor is now waitable (not disowned). MIT
+attribution ships in `/usr/share/licenses/hyprflux-iso/omarchy-ui-MIT.txt`.
+
+**99 builder tests PASS, no skips**, including real Gum Enter/Escape/menu/filter,
+compact terminal, resize, retained-log/control-code handling, monitor cleanup
+and failure propagation. ShellCheck and whitespace checks pass. A real live VM
+source preview was visually inspected at `uefi-zhpg6jje/tui-preview.png`; the
+earlier preview caught the missing Braille glyph and prompted the VT fallback.
+Preview data is clearly labelled synthetic and is NOT installation acceptance.
+
+Readonly export of the verified recovered guest's package cache yielded 1009
+complete archive/signature pairs, merged into the external build cache without
+importing unsigned AUR archives or replacing differing same-name files. Fresh
+repository-version curation and normal installer signature checks remain active.
+This richer embedded online-download seed may reduce mirror traffic; no offline
+or measured speedup claim is made. Retired only completed obsolete build scratch,
+preserving both prior ISOs and all small evidence.
+
+Task `sh_1a1844d50001mU94IQ7RSQ3m7O` builds a fresh UI image and runs Full FIRST,
+then all four Desktop install/boot cases and both firmware loaders, using default
+QEMU network mode (IPv4-only was NOT a fix). Build/cache/temp/output/disks are on
+`/drive-data`. Durable logs:
+`/drive-data/HyprFlux-ISO/qemu-tests/omarchy-ui-20261103/`.
+New-image acceptance is pending; release/hardware/signing gates remain open.
+
+## Full-bundle timeout correction — acceptance running
+
+Diagnostic recovery of `uefi-6qo6vw_e` completed with
+`HYPRFLUX_TEST_INSTALL_PASS`, `HYPRFLUX_OPTIONAL_MISSING_NONE` and
+`HYPRFLUX_FULL_PACKAGE_AUDIT_PASS`. Live and chroot startup DNS/HTTPS probes both
+worked (geo core.db HTTP 200, about 1.19/0.94 s). Some later Rackspace DNS
+requests still timed out, but cached-download progress/retries completed this
+recovery. No permanent chroot DNS failure or IPv6-specific cause was established.
+
+Task `sh_1a1711c6b001lNvqSAsfpPC9NZ` now checks recovered installed-system desktop
+boot, log `stage-supervision-20261103/full-recovery-boot.log`. Machine metadata
+remains `resumed=true`, `embedded=false`, `ipv4_network=true`; it MUST NOT count
+toward the clean exact-image matrix. The successful Full recovery establishes
+functional package recovery only; fresh Full acceptance is still pending.
+
+IPv4-only sustained install failed with the SAME DNS timeouts, so it is not a
+networking fix and no further fresh install is running. Task
+`sh_1a13d61f8001VDb0c98GdEKOyp` instead resumes the already-configured failed
+`uefi-6qo6vw_e` disk for bounded diagnostic recovery, preserving its partitions
+and downloaded packages. This sets `resumed=true` and is excluded from clean
+exact-image acceptance regardless of outcome. Live/chroot resolver lookups and
+HTTPS probes now run before integration on resume and before unmount on failure,
+so the failing context is captured rather than lost when QEMU stops. Log:
+`stage-supervision-20261103/full-diagnostic-recovery.log`.
+
+Short live-network diagnostics completed on both default dual-stack and IPv4-only
+QEMU networks. All sequential mirror probes and five concurrent geo-mirror
+requests returned HTTP 200 in both modes. Evidence is
+`/drive-data/HyprFlux-ISO/network-comparison.log`. This does NOT establish IPv6
+as the failure cause; sustained retrieval remains unverified. A controlled next
+Full attempt uses `--ipv4-network` ONLY for QEMU and records it in metadata and
+acceptance output. The production ISO, DNS and signature policy are unchanged.
+Task: `sh_1a110afda001WvAx5e1VmMr7jm`; durable workflow log:
+`stage-supervision-20261103/workflow-ipv4-control.log`. No current-image Full
+acceptance is claimed until its package audit and desktop boot both pass.
+
+The same-image mirror retry also failed during essential package retrieval with
+DNS timeouts, before supervised Phase A. Repeated complete installation retries
+are paused pending isolation. Readonly extraction from the failed guest shows
+NetworkManager's QEMU-provided resolvers `10.0.2.3` and `fec0::3`; no arbitrary
+public DNS override was installed. Host uses LAN router DNS. The target mirror
+list contains Rackspace, geo.mirror.pkgbuild.com and MIT after retry rotation.
+
+Task `sh_1a10d7f29001Yu1BYaWeFeB4KP` runs lightweight live VM network diagnostics
+with default dual-stack and IPv4-only QEMU user networking, sequentially. It
+collects DNS lookups, routes, normal/IPv4 HTTPS and parallel requests without
+partitioning or claiming acceptance. See `network-default.log`,
+`network-ipv4.log`, and `/drive-data/HyprFlux-ISO/network-diagnostic-workflow.log`.
+These are test-harness changes only; the candidate ISO is unchanged.
+
+Corrected candidate built successfully:
+`/drive-data/HyprFlux-ISO/stage-supervision-build/out/build-20261103T091709Z-1/hyprflux-2026.11.03-x86_64.iso`,
+SHA256 `b245d192de15867324a2be1dac538b6a41b8c27b2ca13fcf84c4da9d57a76775`.
+UEFI and BIOS firmware smoke passed. First Full attempt failed during essential
+repository-package download, BEFORE Phase A supervision: mirrors returned 404,
+DNS timeouts and connection timeouts. No desktop acceptance is claimed from that
+attempt. Host probes afterward retrieved core.db successfully from all three
+configured fallback mirrors (HTTP 200; 1.97/2.74/7.38 seconds).
+
+Task `sh_1a0e0a436001cnkbwz4B2QaEgz` re-verifies and retries the SAME ISO, retaining
+firmware evidence and all failed attempt logs. Progress:
+`stage-supervision-20261103/workflow-retry-mirrors.log`. No rebuild or signature
+policy relaxation was performed for this network failure. Matrix remains pending.
+
+The locale-default ISO (`1b5809f32877e7d7aaf374b18f6ac353c0c012a11951158c5d195f5eee90e898`)
+passed all four embedded Desktop install/boot cases and both firmware loaders.
+All four desktop screenshots were inspected; wallpaper, Waybar and green success
+checkmark render correctly. Full failed its strict package audit: Codex and Free
+Download Manager were absent. Do not claim that image passed the Full matrix.
+
+Diagnosis: `01-hypr-pkgs.sh` exceeded the common 2400-second component timeout
+during slow downloads. `su` shell termination did not stop all PTY/session
+descendants; app installers continued during Phase B, making missing-app warnings
+stale and preventing the final packages from completing before verification.
+
+Added a Linux child-subreaper stage supervisor that cleans adopted and detached
+descendants using pidfds on completion, timeout or interruption. Ordinary Phase A
+budgets remain 2400 s; Full's bulk app stage gets 7200 s. Phase A timeouts or
+interruptions now abort after tree cleanup instead of overlapping later stages.
+The same supervisor wraps bounded critical AUR installs and Phase B modules.
+The temporary runner is copied into chroot and removed by wrapper cleanup.
+
+**92 builder tests PASS, no skips**, including real detached TERM-ignoring child,
+orphan reaping and root `su` + `script` PTY timeout cleanup. ShellCheck, Python
+syntax and whitespace checks pass. Superseded failed VM disks were retired with
+metadata and diagnostic logs retained; successful Desktop evidence remains.
+
+Task `sh_1a0b29f38001pSsajEVkY24Vdk` builds a new exact image from the changed
+source, then tests Full FIRST and all four Desktop cases, plus both firmware
+loaders. Build/cache/temporary/output/VM files remain on `/drive-data`.
+Logs: `/drive-data/HyprFlux-ISO/qemu-tests/stage-supervision-20261103/`.
+All new-image acceptance is pending. Omarchy UI implementation remains queued
+after profile verification; read-only reference research is preserved at
+`/drive-data/HyprFlux-ISO/omarchy-ui-reference-notes.md`.
+
+## Root storage recovery — complete
+
+Relocated both inactive interactive VM disks and project ISO output to
+`/drive-data/HyprFlux-ISO/`, preserving contents and compatibility path links.
+The interactive test launcher now defaults to `.qemu-tests/interactive/`, which
+points to external storage in this workspace; all `.qcow2` files are Git-ignored.
+
+The project's OpenCode snapshot store was checksum-synchronized to
+`/drive-data/HyprFlux-ISO/opencode-snapshots/3365ccc0f42f97264580ade1793488b83d9275ba`
+and linked at its original location. All snapshot history was preserved; no
+session database or unrelated project store was removed. Temporarily paused
+snapshot capture during relocation, then removed only the temporary local config
+to restore the previous settings. Snapshot relocation recovered 33.07 GiB.
+Final root free space: **44 GiB** (69% used); `/drive-data` free: **99 GiB**.
+Verification log: `/drive-data/HyprFlux-ISO/snapshot-relocation-verified-sync.log`.
+
+## Locale-default/profile verification — running
+
+Latest continuation: `sh_19fdc30dc001EeMq7zbP2E7K6i` runs
+`locale-profiles-20261103/resume.py`; logs are `workflow-resume-1.log`.
+The new image built successfully and passed UEFI/BIOS firmware smoke:
+`/drive-data/HyprFlux-ISO/locale-profile-build/out/build-20261103T050948Z-1/hyprflux-2026.11.03-x86_64.iso`,
+SHA256 `1b5809f32877e7d7aaf374b18f6ac353c0c012a11951158c5d195f5eee90e898`.
+Builder suite passed all 86 tests, including Gum. First Desktop installation
+completed base/system configuration and generated en_US.UTF-8, then its new
+test-only assertion rejected the trailing spaces in glibc's locale.gen entry.
+Assertion corrected to accept whitespace but reject commented entries; host
+suite now passes 87 tests (2 optional Gum skips). Production ISO is unchanged.
+
+Root space was exhausted again; moved the idle generated libguestfs appliance
+cache to `/drive-data/HyprFlux-ISO/guestfs-cache-preserved`. Test sockets now
+honor TMPDIR, and host temporary/appliance-cache paths use external storage.
+A failed ENOSPC source-test-file write was repaired from the preserved snapshot
+and the complete host regression suite passed afterward. No user changes were
+discarded. VM metric extraction now identifies the ext4 partition rather than
+assuming partition 2 when swap is enabled. All previous attempt logs are retained.
+
+Current continuation: `sh_19fd03c54001kNdCtqipuNrJ2p`, log
+`locale-profiles-20261103/workflow-attempt-3.log`. The previous external build
+reached the regression suite, but its `/tmp` was still on the full-root Docker
+overlay; two seed tests hit the intentional 2 GiB free-space guard. Container
+`/tmp` is now bound to `/drive-data/HyprFlux-ISO/build-tmp` as well. No ISO from
+this change has passed acceptance yet. All failed-attempt logs remain preserved.
+
+Storage correction: the first rebuild stopped before compilation because the root
+filesystem had no user-available space. Copied and byte-compared this project's
+Docker package cache to `/drive-data/HyprFlux-ISO/package-cache`, then removed only
+the old `hyprflux-pacman-cache` volume, recovering about 1.5 GiB. Unrelated Docker
+images/volumes and the interactive VM were not touched. Task
+`sh_19fcf9aff001n0kMaTaEoECiiH` now builds a frozen copy of current working sources
+using the existing tested builder image in
+`/drive-data/HyprFlux-ISO/locale-profile-build/`. Build scratch, ISO output,
+package cache and test VM disks are all on `/drive-data`; progress is in
+`locale-profiles-20261103/workflow-attempt-2.log` under the external test directory.
+The previous task/log below is historical.
+
+At the user's request, removed the locale-selection TUI step. Fresh installations
+default to `en_US.UTF-8`; review shows the locale and notes it can be changed after
+installation. Timezone and keyboard selection remain. Profile descriptions now
+explain Desktop and Full separately, including Full's extra downloads/apps.
+
+Host checks: **86 tests, OK (2 optional Gum skips)**, ShellCheck and whitespace
+checks passed. The installation fixture now executes the actual profile selection
+function for both choices, checks the installer's default instead of overriding
+it, and verifies target `locale.gen`/`locale.conf` before desktop integration.
+
+New VM state storage: `/drive-data/HyprFlux-ISO/qemu-tests/`, linked from the
+project's `.qemu-tests` so the existing test tools keep their containment checks.
+Historical evidence was copied there and also retained in
+`/drive-data/HyprFlux-ISO/historical-evidence-backup/`. The user's currently running
+interactive VM and its `hyprflux-new-test.qcow2` were not touched.
+
+Task `sh_19fccf929001bX9W3V6ZLBU0QL` builds a fresh explicit-zstd image and runs
+the five-case matrix including both Desktop and Full, plus both firmware loaders.
+VM disks and evidence remain on `/drive-data`; build scratch and ISO output keep
+their existing project locations. Logs:
+`/drive-data/HyprFlux-ISO/qemu-tests/locale-profiles-20261103/`.
+No new-image acceptance is claimed yet; the PASS below is for the previous image.
+
 ## Latest exact-image automated acceptance — PASS
+
+Post-acceptance cleanup at the user's request removed all remaining generated
+VM disks (including the Full disk) and extracted boot payloads from `.qemu-tests`.
+Reclaimed approximately 23 GiB; 149 MiB of logs, screenshots and metadata remain.
+The ISO is untouched. Retained Full metrics were extracted before disk removal;
+historical disk-retention statements below describe the pre-cleanup checkpoint.
 
 Image: `out/build-20261103T010141Z-1/hyprflux-2026.11.03-x86_64.iso`
 

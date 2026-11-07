@@ -36,8 +36,9 @@ RAM="8G"
 CPUS="4"
 DISPLAY_MODE="auto"          # auto | gl | software | headless
 SERIAL_MODE=false           # --serial: guest console on the terminal (paste-friendly)
-# Default test disk lives next to the script (user-writable). Override with --disk=.
-DEFAULT_DISK_IMAGE="${SCRIPT_DIR}/hyprflux-test-disk.qcow2"
+# Keep large VM disks with the regression artifacts (this workspace links that
+# directory to /drive-data). Override with --disk= for another explicit path.
+DEFAULT_DISK_IMAGE="${SCRIPT_DIR}/.qemu-tests/interactive/hyprflux-test-disk.qcow2"
 DISK_IMAGE="${DEFAULT_DISK_IMAGE}"
 USE_VNC=false
 BOOT_DISK_ONLY=false
@@ -119,7 +120,7 @@ for arg in "$@"; do
     echo "  --fresh-vars  Reset OVMF state (tests the fallback EFI loader)"
     echo "  --allow-stale-iso  Permit an ISO older than profile source files"
     echo "  --overwrite-disk   Permit replacing an existing test disk (destructive)"
-    echo "  --disk=PATH   Test disk path (default: ./hyprflux-test-disk.qcow2)"
+    echo "  --disk=PATH   Test disk path (default: .qemu-tests/interactive/hyprflux-test-disk.qcow2)"
     echo "  --ram=SIZE    RAM size (default: 8G)"
     echo "  --cpus=N      Number of CPUs (default: 4)"
     echo "  --help        Show this help"
@@ -140,7 +141,7 @@ if [[ "${BOOT_DISK_ONLY}" != true ]] && [[ -z "${ISO_FILE}" ]]; then
   while IFS= read -r -d '' candidate; do
     [[ -f "${candidate}.sha256" && ! -L "$candidate" ]] || continue
     [[ -z "$ISO_FILE" || "$candidate" -nt "$ISO_FILE" ]] && ISO_FILE="$candidate"
-  done < <(find "$OUT_DIR" -maxdepth 2 -type f -name '*.iso' -print0 2>/dev/null)
+  done < <(find -H "$OUT_DIR" -maxdepth 2 -type f -name '*.iso' -print0 2>/dev/null)
   if [[ -z "${ISO_FILE}" ]]; then
     echo "Error: No completed ISO with a checksum found in ${OUT_DIR}/ or its build directories."
     echo "Run ./build.sh first to build the ISO."
@@ -351,6 +352,7 @@ build_qemu_cmd() {
   echo 'Error: Test disk must be a regular .qcow2 path, not a symlink/device.'
   exit 1
 }
+mkdir -p -- "$(dirname -- "$DISK_IMAGE")"
 exec 9>"${DISK_IMAGE}.lock"
 if ! flock -n 9; then
   echo "Error: Test disk is already in use: ${DISK_IMAGE}"

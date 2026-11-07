@@ -193,7 +193,8 @@ class AuditFixTests(unittest.TestCase):
         self.assertIn('shell: bash', workflow)
 
     def test_fault_test_options_reject_invalid_runs_before_creating_disks(self):
-        for options in (['--memory', '1'], ['--offline', '--install'], ['--no-ntp', '--firmware-boot']):
+        for options in (['--memory', '1'], ['--offline', '--install'], ['--no-ntp', '--firmware-boot'],
+                        ['--network-diagnostics', '--install'], ['--network-diagnostics', '--offline']):
             result = subprocess.run(['python3', str(ROOT / 'tests/qemu-smoke.py'), *options],
                                     cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)

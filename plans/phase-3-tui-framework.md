@@ -2,6 +2,22 @@
 
 ## Goal
 
+### Omarchy presentation adaptation
+
+Palette correction requested by the user: borrow Omarchy's layout/animation,
+NOT its green branding. Use HyprFlux's original cyan logo, yellow status/spinner,
+pink/magenta (Gum 212) prompt/selection accents and white menu headers. Preserve
+green success indicators and the first-boot checkmark. The layout, responsive
+heights, log rendering and cancellation behavior are unchanged.
+
+Use the classic Omarchy wordmark and dim, arrow-prefixed log-tail layout
+(reference commit b45e8464ef4cc094d6edec46faa2a3632a462dd4), branded HyprFlux.
+Remove the red author separator; keep a static header, dot spinner and adaptive
+menu/log heights. Redraw the header only when the screen/terminal size changes.
+Use a compact wordmark on small terminals. Preserve stage files, command status,
+Escape handling, credentials/shim cleanup and all disk safety checks. Retain MIT
+attribution for the upstream presentation reference. This changes no disk logic.
+
 ### 2026-11-03 cancellation amendment
 
 Submitting a blank text field may accept its displayed default; cancelling must
@@ -46,7 +62,7 @@ Based on the reference screenshot, the screen is divided into two regions:
 ```
 
 **Layout breakdown:**
-- **Top ~40%**: Large green ASCII art logo (centered, static)
+- **Top ~40%**: Large cyan HyprFlux ASCII art logo (centered, static)
 - **Status line**: Yellow "Installing..." text (changes to show current phase)
 - **Bottom ~50%**: Scrolling output area that shows installation progress (like a log tail)
 
@@ -73,7 +89,7 @@ The core visual engine. Provides functions to:
 **a) Display the HyprFlux banner (top of screen)**
 
 ```bash
-LOGO_COLOR="\033[1;32m"  # Bold green (like Omarchy)
+LOGO_COLOR="\033[1;36m"  # Bold cyan (HyprFlux palette)
 RESET="\033[0m"
 
 show_banner() {

@@ -30,8 +30,48 @@ class PromptDownloadTests(unittest.TestCase):
             [[ $(tui_input Hostname hyprflux) == custom-name ]]
         ''')
 
+    def test_locale_defaults_to_english_without_a_selection_step(self):
+        installer = (ROOT / 'airootfs/root/hyprflux-install.sh').read_text()
+        self.assertNotIn('step_locale', installer)
+        self.assertNotIn('Locale Configuration', installer)
+        self.check_bash('''
+            source airootfs/root/hyprflux-install.sh
+            [[ "$INSTALL_LOCALE" == en_US.UTF-8 ]]
+        ''')
+
+    def test_guest_locale_assertion_accepts_glibc_whitespace_not_comments(self):
+        fixture = (ROOT / 'tests/guest-install.sh').read_text()
+        assertion = next(line.strip() for line in fixture.splitlines()
+                         if 'grep -Eq' in line and 'locale.gen' in line)
+        with tempfile.TemporaryDirectory() as temp:
+            etc = Path(temp) / 'etc'
+            etc.mkdir()
+            for content, accepted in [('en_US.UTF-8 UTF-8  \n', True),
+                                      ('en_US.UTF-8\tUTF-8\n', True),
+                                      ('#en_US.UTF-8 UTF-8\n', False)]:
+                (etc / 'locale.gen').write_text(content)
+                result = bash(f'MOUNT_POINT={temp!r}\n' + assertion)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+    def test_both_profile_descriptions_and_menu_choices_are_preserved(self):
+        result = self.check_bash('''
+            source airootfs/root/hyprflux-install.sh
+            show_banner() { :; }
+            set_status() { :; }
+            tui_print() { printf '%s\\n' "$*"; }
+            tui_menu() { printf 'Desktop (recommended; smaller and faster)'; }
+            step_profile
+            [[ $INSTALL_PROFILE == desktop ]]
+            tui_menu() { printf 'Full application bundle'; }
+            step_profile
+            [[ $INSTALL_PROFILE == full ]]
+        ''')
+        self.assertIn('Smaller and faster to install.', result.stdout)
+        self.assertIn('Full application bundle: Same desktop, plus additional editors,', result.stdout)
+        self.assertIn('chat, AI, and media applications. More downloads and longer', result.stdout)
+
     def test_required_prompt_cancellation_exits_cleanly_before_next_step(self):
-        for step in ('step_timezone', 'step_locale', 'step_keyboard', 'step_hostname', 'step_user'):
+        for step in ('step_timezone', 'step_keyboard', 'step_hostname', 'step_user'):
             with self.subTest(step=step):
                 result = self.check_bash('''
                     source airootfs/root/hyprflux-install.sh

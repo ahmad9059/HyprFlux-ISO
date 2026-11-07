@@ -111,6 +111,13 @@ All plans are in `plans/` at repo root. There are 6 phases:
 
 ## Reference Repos (in references/, read-only)
 
+Shared desktop configuration and dependencies belong in the HyprFlux source
+repo, not ISO-only patches: Foot syntax/blur, color generation, Papirus cyan
+setup/hooks, SDDM theme dependencies, and Kitty virtual-GPU handling. Publish a
+focused upstream fix and pin its exact revision here. The ISO should validate
+the resulting desktop and retain only genuinely offline/chroot adaptations.
+Do not reintroduce duplicate desktop-fix helpers or sed-rewrite theme modules.
+
 - **HyprFlux** (`references/HyprFlux/`): `install.sh` (123 lines), `dotsSetup.sh` (127 lines), `lib/` (common.sh, packages.sh, git.sh), `modules/` (01-17)
 - **base-installer** (`references/HyprFlux/base-installer/` — merged, was Arch-Hyprland): `install.sh` (pre-patched, no whiptail), `install-scripts/` (00-base.sh, pacman.sh, yay.sh, etc.), `install-scripts/Global_functions.sh`
 - **base-dots** (`references/HyprFlux/base-dots/` — merged, was Hyprland-Dots): upstream-derived dotfiles (pre-patched for non-interactive copy.sh; no clone at install time)

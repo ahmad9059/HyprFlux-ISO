@@ -40,7 +40,7 @@ INSTALL_BOOT_MODE=""
 INSTALL_HAS_NVIDIA="no"
 INSTALL_NVIDIA_DRIVER="nouveau"
 INSTALL_PROFILE="desktop"
-HYPRFLUX_REF="f421b6bd108214079b56c435331ddbbfdfb89591"
+HYPRFLUX_REF="74735688a2703a717694518b5699e79991c33a74"
 USE_SWAP=false
 SWAP_SIZE=0
 
@@ -142,11 +142,9 @@ check_network() {
 step_welcome() {
     show_banner
 
-    tui_print ""
     tui_print_bold "Welcome to the HyprFlux Installer!"
     tui_print ""
     tui_print "This will install Arch Linux with the HyprFlux Hyprland desktop."
-    tui_print ""
     tui_print "Requirements:"
     tui_print "  - Internet connection (repos are cloned during install)"
     tui_print "  - A disk to install to (will be formatted)"
@@ -200,40 +198,6 @@ step_timezone() {
     else
         INSTALL_TIMEZONE="UTC"
     fi
-}
-
-# ============================================================================
-# Step 3: Locale
-# ============================================================================
-step_locale() {
-    show_banner
-    set_status "Locale Configuration"
-
-    # Build the locale list from /etc/locale.gen which is the authoritative
-    # source for what locale-gen accepts.  Each entry in locale.gen is:
-    #    <locale-name> <charmap>
-    # e.g.  "#en_US.UTF-8 UTF-8"  or  "#ur_PK UTF-8"
-    #
-    # We extract every UTF-8 locale, keep the first column (the locale name)
-    # exactly as-is, and present that to the user.  This guarantees the value
-    # selected by the user matches a real locale.gen entry.
-    local gen="/etc/locale.gen"
-
-    # If the live ISO ships a tiny stub, use the full glibc file instead.
-    if [[ -f /usr/share/i18n/SUPPORTED ]] \
-        && [[ $(grep -c 'UTF-8' "$gen" 2>/dev/null) -lt 10 ]]; then
-        gen="/usr/share/i18n/SUPPORTED"
-    fi
-
-    # Extract all UTF-8 locale names (first column) — both forms:
-    #   en_US.UTF-8 UTF-8   →  en_US.UTF-8
-    #   ur_PK UTF-8         →  ur_PK
-    local locale_list
-    locale_list=$(list_utf8_locales "$gen")
-
-    INSTALL_LOCALE=$(printf '%s\n' "$locale_list" | tui_search "Locale") || {
-        cancel_installation
-    }
 }
 
 # ============================================================================
@@ -370,10 +334,13 @@ step_graphics() {
 step_profile() {
     show_banner
     set_status "Application profile"
-    tui_print "Both profiles include the configured HyprFlux desktop, browsers,"
-    tui_print "file manager, audio, networking, screenshots and desktop tools."
-    tui_print "Full additionally installs the extended editor/chat/AI/media bundle."
-    tui_print "Its extra downloads and AUR builds can take considerably longer."
+    tui_print "Desktop: Fully configured HyprFlux desktop with browsers,"
+    tui_print "file manager, audio, networking, and everyday tools."
+    tui_print "Smaller and faster to install."
+    tui_print ""
+    tui_print "Full application bundle: Same desktop, plus additional editors,"
+    tui_print "chat, AI, and media applications. More downloads and longer"
+    tui_print "installation."
     local choice
     choice=$(tui_menu "Choose an application profile:" \
         "Desktop (recommended; smaller and faster)" \
@@ -391,7 +358,7 @@ step_review() {
     tui_print "Hostname: $INSTALL_HOSTNAME"
     tui_print "User: $INSTALL_USERNAME"
     tui_print "Timezone: $INSTALL_TIMEZONE"
-    tui_print "Regional locale: $INSTALL_LOCALE (system language: English)"
+    tui_print "Locale: $INSTALL_LOCALE (change after installation if needed)"
     tui_print "Keyboard: console $INSTALL_KEYMAP / desktop $INSTALL_XKB_LAYOUT $INSTALL_XKB_VARIANT"
     tui_print "Boot mode: $INSTALL_BOOT_MODE"
     tui_print "Application profile: $INSTALL_PROFILE"
@@ -934,8 +901,8 @@ step_configure_system() {
         #   #en_US.UTF-8 UTF-8      (locale name includes .UTF-8)
         #   #ur_PK UTF-8            (locale name is bare, charset follows)
         #
-        # The user-selected INSTALL_LOCALE matches the first column exactly
-        # because step_locale() parsed it from the same file format.
+        # The TUI uses en_US.UTF-8 without a locale-selection prompt. Users can
+        # configure other locales after installation in /etc/locale.gen/conf.
         # -------------------------------------------------------------------
         printf '==> Configuring locale: %s\n' "${INSTALL_LOCALE}"
 
@@ -1252,6 +1219,7 @@ step_install_hyprflux() {
     cp "${SCRIPT_DIR}/lib/hyprflux-chroot-wrapper.sh" \
         "${MOUNT_POINT}/root/hyprflux-chroot-wrapper.sh"
     chmod 755 "${MOUNT_POINT}/root/hyprflux-chroot-wrapper.sh"
+    cp "${SCRIPT_DIR}/lib/run-stage.py" "${MOUNT_POINT}/root/hyprflux-run-stage.py"
 
     show_banner
     set_status "Installing HyprFlux (packages, config, themes)..."
@@ -1465,7 +1433,6 @@ main() {
     check_network          # Step 0
     step_welcome           # Step 1
     step_timezone          # Step 2
-    step_locale            # Step 3
     step_keyboard          # Step 4
     step_hostname          # Step 5
     step_user              # Step 6

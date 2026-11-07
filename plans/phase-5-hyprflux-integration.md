@@ -2,7 +2,38 @@
 
 ## Goal
 
+### Desktop regression amendment
+
+Desktop source ownership was corrected on 2026-11-06. HyprFlux revision
+`96535f47357b3b53ef03219bd6f4d65d0a3e174b` owns Foot syntax/blur and its color
+generator, the VirtIO-only Kitty launcher, cyan Papirus helper/upgrade hook,
+SDDM Qt dependencies, and removal of the redundant deprecated workspace scale.
+Both `.config` and `base-dots/config` are corrected upstream. The current
+hardware module also already preserves the Waybar hwmon comma.
+
+The ISO must run those modules unchanged. Do not copy desktop-fix utilities
+into airootfs, sed-rewrite theme modules, normalize Foot/defaults, or install
+parallel desktop launchers/hooks. It retains read-only config validation,
+critical package postconditions, strict runtime greeter/terminal/icon/blur tests,
+and actual offline/chroot adaptations (temporary shims, native display setup,
+first-login GTK/user-service work and its ordered session startup).
+
+Preserve the green success icon. A process/package check alone is not visual
+acceptance. Prior-image passes do not certify the new upstream pin.
+
+Failure-path hardening from the production audit: outer cleanup must revoke
+upstream's `/etc/sudoers.d/99-hyprflux-temp` as well as its own temporary grant,
+because terminating a stage tree may interrupt the inner EXIT cleanup. Final
+postconditions must parse system D-Bus policy XML and fail closed on malformed
+files; never delete or repair an unknown policy to obtain a passing result.
+
 ### Audit-fix amendment (2026-11-03)
+
+Supervise chroot script stages with a Linux child-subreaper so su/sudo/PTY
+descendants cannot keep installing after their stage returns. Ordinary component
+budget remains 40 minutes; Full's large application batch gets a finite two-hour
+budget. A timed-out/interrupted Phase A stage aborts after tree cleanup, instead
+of overlapping with later modules and producing a stale missing-app report.
 
 A successful Full recovery removes stale missing-application warnings. Evaluate
 official Waybar functionally before replacing `waybar-git`: the pinned HyprFlux

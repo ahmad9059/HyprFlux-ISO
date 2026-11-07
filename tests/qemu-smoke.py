@@ -99,9 +99,17 @@ def main():
     parser.add_argument("--offline", action="store_true", help="No external guest networking; live smoke or installed boot only")
     parser.add_argument("--no-ntp", action="store_true", help="Mask live time synchronization for direct-boot testing")
     parser.add_argument("--password-login", action="store_true", help="New install: verify the real SDDM password login, without test autologin")
+    parser.add_argument("--network-diagnostics", action="store_true", help="Collect live DNS/HTTPS probes without installing or claiming network acceptance")
+    parser.add_argument("--tui-preview", action="store_true", help="Render current source UI in a live VM; no installation or embedded-image acceptance")
+    parser.add_argument("--ipv4-network", action="store_true", help="Disable IPv6 advertisement on this disposable QEMU user network")
+    parser.add_argument("--virtual-audio", action="store_true", help="Test virtual Intel HDA and PipeWire streaming; host output is discarded")
     args = parser.parse_args()
-    if args.embedded and not args.install:
-        parser.error("--embedded requires a new --install run")
+    if args.embedded and not (args.install or args.tui_preview):
+        parser.error("--embedded requires a new --install run or a --tui-preview")
+    if args.network_diagnostics and (args.install or args.resume or args.boot or args.offline):
+        parser.error("--network-diagnostics requires an online live-only run")
+    if args.tui_preview and (args.install or args.resume or args.boot or args.network_diagnostics):
+        parser.error("--tui-preview requires a separate live-only run")
     if args.offline and (args.install or args.resume):
         parser.error("Offline mode tests live boot/network setup, not an offline installation")
     if args.password_login and not args.install:
@@ -142,6 +150,8 @@ def main():
         metadata = json.loads((state / "machine.json").read_text())
         args.memory = args.memory or metadata.get("memory_mib", 6144)
         args.password_login = metadata.get("password_login", False)
+        args.ipv4_network = metadata.get("ipv4_network", False)
+        args.virtual_audio = metadata.get("virtual_audio", False)
         args.bios = metadata["bios"]
         args.disk_bus = metadata["disk_bus"]
         args.profile = args.profile or metadata.get("profile", "full")
@@ -156,6 +166,10 @@ def main():
         args.profile = args.profile or "desktop"
         args.memory = args.memory or 6144
         metadata = {"bios": args.bios, "disk_bus": args.disk_bus, "profile": args.profile, "embedded": args.embedded, "layout": "manual-gpt" if args.manual_layout else "automatic", "memory_mib": args.memory, "offline": args.offline, "no_ntp": args.no_ntp, "password_login": args.password_login}
+        metadata["ipv4_network"] = args.ipv4_network
+        metadata["network_diagnostics"] = args.network_diagnostics
+        metadata["tui_preview"] = args.tui_preview
+        metadata["virtual_audio"] = args.virtual_audio
         (state / "machine.json").write_text(json.dumps(metadata))
     disk_path = state / "disk.qcow2"
     if disk_path.is_symlink() or not disk_path.is_file():
@@ -177,17 +191,21 @@ def main():
         (state / "machine.json").write_text(json.dumps(metadata))
     # QEMU UNIX socket paths must fit sockaddr_un (108 bytes).
     import tempfile
-    sockets = tempfile.TemporaryDirectory(prefix="hq-", dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None)
+    socket_directory = os.environ.get("TMPDIR") or ("/tmp/opencode" if Path("/tmp/opencode").is_dir() else None)
+    sockets = tempfile.TemporaryDirectory(prefix="hq-", dir=socket_directory)
     serial = Path(sockets.name) / "serial.sock"
     qmp = Path(sockets.name) / "qmp.sock"
     if not isinstance(args.memory, int) or not 512 <= args.memory <= 32768:
         parser.error("Guest memory must be between 512 and 32768 MiB")
     command = ["qemu-system-x86_64", "-machine", "q35", "-enable-kvm", "-cpu", "host", "-m", str(args.memory), "-smp", "4",
-               "-netdev", "user,id=net0" + (",restrict=on" if args.offline else ""), "-device", "virtio-net-pci,netdev=net0",
+               "-netdev", "user,id=net0" + (",restrict=on" if args.offline else "") + (",ipv6=off" if args.ipv4_network else ""), "-device", "virtio-net-pci,netdev=net0",
                "-chardev", f"socket,id=serial0,path={serial},server=on,wait=off",
                "-device", "isa-serial,chardev=serial0", "-monitor", "none", "-no-reboot",
                "-qmp", f"unix:{qmp},server=on,wait=off"]
     devices = {"virtio": "vda", "scsi": "sda", "sata": "sda", "nvme": "nvme0n1"}
+    if args.virtual_audio:
+        command += ["-audiodev", "none,id=testaudio", "-device", "intel-hda",
+                    "-device", "hda-duplex,audiodev=testaudio"]
     if args.disk_bus == "virtio":
         command += ["-drive", f"file={state}/disk.qcow2,if=virtio,format=qcow2"]
     else:
@@ -260,7 +278,7 @@ def main():
                     run("xorriso", "-osirrox", "on", "-indev", str(iso), "-extract",
                         f"/hyprflux/boot/x86_64/{name}", str(payload / name))
             command += ["-kernel", str(payload / "vmlinuz-linux"), "-initrd", str(payload / "initramfs-linux.img"),
-                        "-append", f"archisobasedir=hyprflux archisosearchuuid={uuid} cow_spacesize=2G plymouth.enable=0 console=ttyS0,115200n8 hyprflux.test=1 hyprflux.testdisk={devices[args.disk_bus]} hyprflux.testswap={args.swap} hyprflux.profile={args.profile} systemd.mask=getty@tty1.service" + (" systemd.mask=systemd-timesyncd.service" if args.no_ntp or args.offline else "") + (" hyprflux.passwordlogin=1" if args.password_login else "")]
+                         "-append", f"archisobasedir=hyprflux archisosearchuuid={uuid} cow_spacesize=2G plymouth.enable=0 console=ttyS0,115200n8 hyprflux.test=1 hyprflux.testdisk={devices[args.disk_bus]} hyprflux.testswap={args.swap} hyprflux.profile={args.profile} systemd.mask=getty@tty1.service" + (" systemd.mask=systemd-timesyncd.service" if args.no_ntp or args.offline else "") + (" hyprflux.passwordlogin=1" if args.password_login else "") + (" hyprflux.virtualaudio=1" if args.virtual_audio else "")]
         command += ["-fsdev", f"local,id=src,path={source},security_model=none,readonly=on",
                     "-device", "virtio-9p-pci,fsdev=src,mount_tag=hyprflux"]
         if args.package_cache:
@@ -342,6 +360,10 @@ def main():
                     task = "bash /run/hyprflux-source/tests/guest-install.sh" if args.install else "bash /run/hyprflux-source/tests/guest-smoke.sh"
                     if args.offline:
                         task = "bash /run/hyprflux-source/tests/guest-offline-smoke.sh"
+                    if args.network_diagnostics:
+                        task = "bash /run/hyprflux-source/tests/guest-network-diagnostics.sh"
+                    if args.tui_preview:
+                        task = "bash /run/hyprflux-source/tests/guest-tui-preview.sh"
                     if args.embedded:
                         task = "HYPRFLUX_TEST_EMBEDDED=1 " + task
                     if args.package_cache:
@@ -356,7 +378,13 @@ def main():
                     started = True
                     buffer = b""
                 marker = b"HYPRFLUX_TEST_BOOT_PASS" if args.boot else (b"HYPRFLUX_TEST_INSTALL_PASS" if args.install else b"HYPRFLUX_TEST_SMOKE_PASS")
+                if args.network_diagnostics:
+                    marker = b"HYPRFLUX_NETWORK_DIAGNOSTICS_COMPLETE"
+                if args.tui_preview:
+                    marker = b"HYPRFLUX_TUI_PREVIEW_READY"
                 if marker_seen(plain, marker):
+                    if args.tui_preview:
+                        request(qmp, "screendump", {"filename": str(state / "tui-preview.png"), "format": "png"})
                     if args.boot:
                         image = guest_screenshot((state / "serial.log").read_bytes())
                         if image is not None:

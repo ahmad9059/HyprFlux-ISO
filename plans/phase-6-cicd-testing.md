@@ -4,6 +4,16 @@
 
 ### Audit acceptance amendment (2026-11-03)
 
+2026-11-06 deep-check extension: rebuild from the published shared-desktop pin;
+attempt clean embedded Desktop automatic/manual under UEFI and BIOS, Full UEFI
+and BIOS, password login, a second installed-system boot, 4 GiB RAM/swap/NTP-off,
+offline live boot and real firmware loaders. Verify system D-Bus and parse its
+policy XML before desktop acceptance. Optional virtual Intel HDA plus PipeWire
+streaming uses QEMU's null audio backend, not host/hardware playback certification.
+Preserve evidence and latest artifacts; retire only unused superseded generated
+disks/scratch under external storage as needed. Never overwrite a failure with
+a diagnostic repair and call it a clean pass. No automatic public release.
+
 Add offline live boot/keyring tests, deliberately undersized ext4 rejection,
 4 GiB RAM and NTP-disabled install/boot coverage, and real SDDM password-login
 verification without test autologin. All cases remain disposable VM-only.

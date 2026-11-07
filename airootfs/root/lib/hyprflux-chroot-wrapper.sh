@@ -33,7 +33,13 @@ TARGET_HOME="/home/${TARGET_USER}"
 [[ $EUID -eq 0 && "$TARGET_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ && "$TARGET_USER" != root ]] || exit 1
 id "$TARGET_USER" >/dev/null || exit 1
 FAILED_COMPONENTS=()
-ISO_THEME_MODULE=""
+STAGE_RUNNER="$(dirname -- "${BASH_SOURCE[0]}")/hyprflux-run-stage.py"
+
+run_stage() {
+    local seconds="$1"
+    shift
+    python3 "$STAGE_RUNNER" --timeout "$seconds" --kill-after 30 -- "$@"
+}
 
 record_missing_applications() {
     local report="$1"
@@ -48,10 +54,12 @@ record_missing_applications() {
 
 # Always revoke temporary privileges, including on errors and interrupts.
 cleanup_wrapper() {
-    rm -f /etc/sudoers.d/hyprflux-temp
+    # scripts/zsh.sh owns an additional temporary grant. Its EXIT cleanup may
+    # be interrupted by stage-tree termination, so the outer owner revokes it too.
+    rm -f /etc/sudoers.d/hyprflux-temp /etc/sudoers.d/99-hyprflux-temp
     rm -f /usr/local/bin/chsh /usr/local/bin/gsettings /usr/local/bin/nwg-look /usr/local/bin/yay-iso
     rm -f /tmp/hyprflux-module-env.sh
-    if [[ -n "${ISO_THEME_MODULE:-}" ]]; then rm -f -- "$ISO_THEME_MODULE"; fi
+    if [[ -n "${STAGE_RUNNER:-}" ]]; then rm -f -- "$STAGE_RUNNER"; fi
 }
 trap cleanup_wrapper EXIT
 trap 'exit 130' INT
@@ -72,18 +80,6 @@ recover_pacman_lock() {
     fi
     echo '[Recovery] Removing stale pacman lock; no package manager is running.'
     rm -f -- "$lock"
-}
-
-prepare_iso_theme_module() {
-    local source="$1" destination="$2"
-    # papirus-folders is not an official-repository package. Do not let the
-    # optional folder-color tool abort installation of the actual icon theme.
-    # Adapt a temporary copy, leaving the pinned upstream checkout untouched.
-    grep -Fq 'pacman -S --needed --noconfirm papirus-icon-theme papirus-folders' "$source" \
-        || { echo '[ERROR] Unrecognized pinned theme-module install command.' >&2; return 1; }
-    sed 's/pacman -S --needed --noconfirm papirus-icon-theme papirus-folders/pacman -S --needed --noconfirm papirus-icon-theme/' \
-        "$source" > "$destination" || return 1
-    chmod 644 "$destination"
 }
 
 # Retain downloaded packages and retry transient HTTPS resets. A failed
@@ -120,15 +116,6 @@ pacman_retry() {
 desktop_commands_present() {
     pacman -Q waybar-git wlogout >/dev/null 2>&1 \
         && command -v waybar >/dev/null && command -v wlogout >/dev/null
-}
-
-normalize_hyprland_defaults() {
-    local settings="$1"
-    [[ -f "$settings" ]] || return 0
-    # The pinned dots redundantly set the default scale of 1. Hyprland 0.57
-    # deprecates this key; omitting it preserves the default without warnings.
-    # Do not silently discard a user's non-default special-workspace scale.
-    sed -i '/^[[:space:]]*special_scale_factor[[:space:]]*=[[:space:]]*1\(\.0\+\)\{0,1\}[[:space:]]*,[[:space:]]*\(--.*\)\{0,1\}$/d' "$settings"
 }
 
 install_waybar_session_service() {
@@ -179,12 +166,8 @@ WAYBAR_START_EOF
     fi
 }
 
-normalize_and_validate_waybar() {
+validate_waybar() {
     local directory="$1"
-    # Pinned hardware detection replaces a multi-line hwmon array but drops its
-    # comma. Repair that precise generated form; reject other malformed JSONC.
-    sed -i 's/^\([[:space:]]*"hwmon-path"[[:space:]]*:[[:space:]]*\[.*\]\)[[:space:]]*$/\1,/' \
-        "$directory/Modules" || return 1
     python - "$directory" <<'WAYBAR_VALIDATE_EOF'
 from pathlib import Path
 import sys
@@ -202,11 +185,28 @@ for name in ("config", "Modules", "ModulesWorkspaces", "ModulesCustom", "Modules
 WAYBAR_VALIDATE_EOF
 }
 
+validate_dbus_policies() {
+    python3 - "${1:-/}" <<'DBUS_VALIDATE_EOF'
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+root = Path(sys.argv[1])
+for directory in ('usr/share/dbus-1/system.d', 'etc/dbus-1/system.d'):
+    for policy in (root / directory).glob('*.conf'):
+        try:
+            ET.parse(policy)
+        except (OSError, ET.ParseError) as error:
+            raise SystemExit(f'[ERROR] Invalid system D-Bus policy {policy}: {error}')
+print('[OK] System D-Bus policies are well-formed.')
+DBUS_VALIDATE_EOF
+}
+
 install_desktop_aur() {
     local attempt
     for attempt in 1 2 3; do
         if desktop_commands_present; then return 0; fi
-        timeout --kill-after=30s 1800 su - "$TARGET_USER" -s /bin/bash -c \
+        run_stage 1800 su - "$TARGET_USER" -s /bin/bash -c \
             'yay -S --needed --noconfirm waybar-git wlogout' </dev/null || true
         if desktop_commands_present; then return 0; fi
         rotate_mirrors "$RETRY_MIRRORLIST" || true
@@ -327,7 +327,7 @@ RETRY_MIRRORLIST=/etc/pacman.d/mirrorlist
 pacman_retry -Syu --needed --noconfirm hyprland hypridle hyprlock sddm mesa \
     kitty foot rofi swaync networkmanager pipewire pipewire-audio pipewire-pulse pipewire-alsa pipewire-jack wireplumber sof-firmware \
     xdg-desktop-portal-hyprland xdg-desktop-portal-gtk polkit hyprpolkitagent \
-    qt6-svg qt6-virtualkeyboard qt6-multimedia xorg-xwayland zsh \
+    xorg-xwayland zsh \
     firefox chromium thunar tumbler thunar-archive-plugin thunar-volman file-roller \
     network-manager-applet power-profiles-daemon wireless-regdb bluez bluez-utils blueman \
     wl-clipboard cliphist grim slurp hyprpicker swappy imagemagick jq \
@@ -361,7 +361,7 @@ echo ""
 # Uses -s /bin/bash explicitly so it works before zsh is installed.
 run_as_user() {
     local script="$1"
-    local script_name
+    local script_name stage_seconds=2400 stage_status
     script_name=$(basename "$script")
 
     if [[ ! -f "$script" ]]; then
@@ -371,7 +371,9 @@ run_as_user() {
     fi
 
     echo "    Running ${script_name}..."
-    timeout --kill-after=30s 2400 su - "${TARGET_USER}" -s /bin/bash -c "
+    # Full downloads/builds a much larger bundle than ordinary components.
+    [[ "$script_name" == 01-hypr-pkgs.sh && "$INSTALL_PROFILE" == full ]] && stage_seconds=7200
+    if run_stage "$stage_seconds" su - "${TARGET_USER}" -s /bin/bash -c "
         export HOME=\"${TARGET_HOME}\"
         export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin\"
         # Several upstream scripts use set -e with tput during initialization.
@@ -380,11 +382,18 @@ run_as_user() {
         export HYPRFLUX_LOGS_DIR=\"${TARGET_HOME}/HyprFlux/logs\"
         cd \"${ARCH_HYPR_DIR}\" 2>/dev/null || cd \"\$HOME\"
         bash \"${script}\"
-    " </dev/null || {
+    " </dev/null; then
+        return 0
+    else
+        stage_status=$?
+        if (( stage_status == 124 || stage_status == 125 || stage_status >= 128 )); then
+            echo "    [ERROR] ${script_name} timed out or was interrupted; descendants stopped. Aborting installation."
+            exit "$stage_status"
+        fi
         echo "    [WARN] ${script_name} had issues (continuing)"
         FAILED_COMPONENTS+=("$script_name")
         return 0
-    }
+    fi
 }
 
 # Ensure unified log dir exists and is writable by the target user
@@ -623,16 +632,11 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
         
         module_name=$(basename "$module")
         module_script="$module"
-        if [[ "$module_name" == 04-themes.sh ]]; then
-            ISO_THEME_MODULE=$(mktemp /tmp/hyprflux-iso-theme.XXXXXX)
-            prepare_iso_theme_module "$module" "$ISO_THEME_MODULE"
-            module_script="$ISO_THEME_MODULE"
-        fi
         
         echo "    [B] ${module_name}..."
         # A separate strict Bash process preserves errexit even though the
         # parent collects failures. Never suppress stderr: it is diagnostic.
-        timeout --kill-after=30s 1200 su - "${TARGET_USER}" -s /bin/bash -c "
+        run_stage 1200 su - "${TARGET_USER}" -s /bin/bash -c "
             set -e
             export HOME=\"${TARGET_HOME}\"
             source \"${CONFIG_ENV_FILE}\"
@@ -645,10 +649,6 @@ if [[ -d "${HYPRFLUX_DIR}/modules" ]]; then
             echo "    [WARN] ${module_name} failed; recorded in installation summary."
             FAILED_COMPONENTS+=("$module_name")
         }
-        if [[ -n "$ISO_THEME_MODULE" ]]; then
-            rm -f -- "$ISO_THEME_MODULE"
-            ISO_THEME_MODULE=""
-        fi
     done
 else
     echo "    [ERROR] HyprFlux modules directory not found"
@@ -658,8 +658,10 @@ fi
 echo ""
 echo "    Phase B complete."
 
-normalize_hyprland_defaults "${TARGET_HOME}/.config/hypr/UserConfigs/user-settings.lua"
-normalize_and_validate_waybar "${TARGET_HOME}/.config/waybar" || exit 1
+validate_waybar "${TARGET_HOME}/.config/waybar" || exit 1
+# Desktop assets/setup belong to the pinned HyprFlux modules. Validate their
+# output here; do not patch Foot, recolor icons, or install parallel launchers.
+runuser -u "$TARGET_USER" -- env HOME="$TARGET_HOME" foot --check-config || exit 1
 
 # A chroot has no desktop session. Do not persist its guessed 1080p mode or
 # live-environment DRM card numbers (those can change after driver installation).
@@ -871,10 +873,11 @@ echo "    Cleanup complete."
 
 # Enforce postconditions, not the exit status of permissive upstream scripts.
 critical_failed=0
+validate_dbus_policies || critical_failed=1
 pacman -Dk || critical_failed=1
 pacman -Qk hyprland sddm pipewire pipewire-audio pipewire-alsa pipewire-pulse wireplumber sof-firmware networkmanager waybar-git wlogout \
     cliphist kvantum rofi imagemagick swaync wl-clipboard kitty hypridle hyprlock \
-    firefox chromium thunar gsettings-desktop-schemas dconf papirus-icon-theme || critical_failed=1
+    firefox chromium thunar foot qt6-5compat gsettings-desktop-schemas dconf papirus-icon-theme || critical_failed=1
 for command in Hyprland kitty rofi waybar wlogout awww-daemon firefox chromium thunar pipewire wireplumber; do
     if ! command -v "$command" >/dev/null; then
         echo "[ERROR] Required desktop command missing: $command"

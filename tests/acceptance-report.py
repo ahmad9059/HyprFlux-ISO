@@ -13,6 +13,7 @@ REQUIRED_CASES = (
     ("desktop", "uefi", "manual-gpt"),
     ("desktop", "bios", "manual-gpt"),
     ("full", "uefi", "automatic"),
+    ("full", "bios", "automatic"),
 )
 
 
@@ -33,7 +34,9 @@ def recorded_results(base, digest):
         if not recorded or recorded[0] != digest:
             continue
         metadata = json.loads((state / "machine.json").read_text())
-        embedded = metadata.get("embedded", False) and not metadata.get("resumed", False)
+        embedded = (metadata.get("embedded", False) and not metadata.get("resumed", False)
+                    and not metadata.get("tui_preview", False)
+                    and not metadata.get("maintenance_test", False))
         screenshot = state / "desktop.png"
         png = False
         if screenshot.is_file():
@@ -45,6 +48,8 @@ def recorded_results(base, digest):
             "firmware": "bios" if metadata["bios"] else "uefi",
             "layout": metadata.get("layout", "automatic"),
             "disk_bus": metadata["disk_bus"],
+            "ipv4_network": metadata.get("ipv4_network", False),
+            "virtual_audio": metadata.get("virtual_audio", False),
             "embedded_unmodified": bool(embedded),
             "install_pass": embedded and (state / "installed.ok").is_file(),
             "boot_pass": bool(embedded and (state / "installed.ok").is_file() and png
